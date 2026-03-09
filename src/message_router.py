@@ -248,35 +248,52 @@ class MessageRouter:
             lines.append(f"[{turn.get('time','')}] {prefix}: {turn['text']}")
         return "最近对话记录:\n" + "\n".join(lines)
 
-    # ── Smart Intent Classification ──
+    # ── Intent Classification (rule-based, no subprocess) ──
+
+    _REMEMBER_PATTERNS = re.compile(
+        r"(记住|记一下|以后|别忘|偏好|习惯|规则|设置.*(?:为|成)|记得)"
+    )
+    _TODO_PATTERNS = re.compile(
+        r"(待办|todo|任务|提醒我|加个|添加.*任务|完成.*任务|清单)"
+    )
+    _LOOP_PATTERNS = re.compile(
+        r"(定时|循环|每隔|loop|cron|定期|巡检|监控.*(?:启动|停止|状态))"
+    )
+    _SESSION_PATTERNS = re.compile(
+        r"(会话|session|运行中|停止.*会话|查看.*输出|后台.*任务)"
+    )
+    _DOCUMENT_PATTERNS = re.compile(
+        r"(文档|doc|飞书文档|创建文档|写入文档|读取文档|分享文档)"
+    )
 
     def _classify_intent(self, text: str) -> str:
-        """Classify user intent using haiku (auto-degrades to DeepSeek)."""
-        prompt = (
-            "分类以下消息的意图，只输出一个词：\n"
-            "- remember: 用户想让你记住偏好、规则、习惯\n"
-            "- todo: 用户在管理任务（添加、查看、完成待办）\n"
-            "- query: 用户在问问题、闲聊、讨论\n"
-            "- execute: 用户想让你执行某个操作（写代码、搜索、分析等）\n"
-            "- loop: 用户想启动、停止或管理定时循环任务（如定时检查、定时汇报）\n"
-            "- session: 用户想查看、管理运行中的会话（查看状态、停止会话、查看输出）\n"
-            "- document: 用户想操作飞书在线文档（创建、读取、写入、分享文档）\n\n"
-            f"消息: {text[:200]}\n意图:"
-        )
-        try:
-            output = self.quota.call_claude(prompt, "haiku", timeout=30)
-            intent = output.lower().split()[0] if output else "query"
-            if intent in ("remember", "todo", "query", "execute", "loop", "session", "document"):
-                return intent
-        except Exception as e:
-            logger.warning(f"Intent classification failed: {e}")
-            self.error_tracker.track("intent_classify_error", str(e), "classify_intent", "low", text[:100])
+        """Classify user intent using keyword rules (no subprocess call)."""
+        t = text[:200].lower()
+        if self._REMEMBER_PATTERNS.search(t):
+            return "remember"
+        if self._TODO_PATTERNS.search(t):
+            return "todo"
+        if self._LOOP_PATTERNS.search(t):
+            return "loop"
+        if self._SESSION_PATTERNS.search(t):
+            return "session"
+        if self._DOCUMENT_PATTERNS.search(t):
+            return "document"
         return "query"
 
     # ── RAG: Knowledge Base Query ──
 
+    # Short or casual messages that don't benefit from RAG
+    _SKIP_RAG_PATTERNS = re.compile(
+        r"^(你好|hi|hello|ok|好的|嗯|哈哈|谢谢|666|牛|👍|😂|行|收到|了解|明白)$",
+        re.IGNORECASE,
+    )
+
     def _query_knowledge_base(self, text: str) -> str:
         """Query vector store for relevant articles to inject as context."""
+        # Skip RAG for short/casual messages (saves ~500ms embedding + query)
+        if len(text) < 6 or self._SKIP_RAG_PATTERNS.match(text.strip()):
+            return ""
         try:
             results = self.vector_store.query_similar(text, top_k=3)
             if not results:
