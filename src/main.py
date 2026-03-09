@@ -45,6 +45,13 @@ def main():
     error_tracker = ErrorTracker()
     router = MessageRouter(ai_analyzer, writer, content_index, sender, vector_store, error_tracker)
 
+    # Pre-warm embedding model at startup (avoid 8s delay on first message)
+    try:
+        from src.ai.embeddings import get_embedding_model
+        get_embedding_model()
+    except Exception as e:
+        logger.warning(f"Embedding model pre-warm failed (will retry on first query): {e}")
+
     logger.info("All components initialized. Starting Feishu listener...")
 
     # Start Feishu WebSocket listener (blocking)
