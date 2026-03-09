@@ -7,7 +7,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config.settings import settings
 from src.feishu_sender import FeishuSender
 
-RECIPIENT = "ou_4a18a2e35a5b04262a24f41731046d15"
+ADMIN_ID = "ou_4a18a2e35a5b04262a24f41731046d15"
+GROUP_CHAT_ID = "oc_4f17f731a0a3bf9489c095c26be6dedc"
 
 
 def main():
@@ -30,8 +31,14 @@ def main():
         preview = content
 
     sender = FeishuSender(settings)
-    sender.send_text(RECIPIENT, f"Daily Briefing {date}\n\n{preview}")
-    print(f"Sent to {RECIPIENT}")
+    msg = f"Daily Briefing {date}\n\n{preview}"
+
+    # Send to admin (private) and group chat
+    sender.send_text(ADMIN_ID, msg)
+    print(f"Sent to admin {ADMIN_ID}")
+
+    sender.send_text(GROUP_CHAT_ID, msg)
+    print(f"Sent to group {GROUP_CHAT_ID}")
 
 
 if __name__ == "__main__":
