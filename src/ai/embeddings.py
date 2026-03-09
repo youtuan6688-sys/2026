@@ -9,9 +9,9 @@ def get_embedding_model():
     """Lazy-load the embedding model (bge-m3, ~2GB)."""
     global _model
     if _model is None:
-        logger.info("Loading embedding model BAAI/bge-m3 (first time may download ~2GB)...")
+        logger.info("Loading embedding model BAAI/bge-small-zh-v1.5...")
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("BAAI/bge-m3")
+        _model = SentenceTransformer("BAAI/bge-small-zh-v1.5")
         logger.info("Embedding model loaded.")
     return _model
 

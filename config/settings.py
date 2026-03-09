@@ -11,9 +11,16 @@ class Settings(BaseSettings):
     feishu_encrypt_key: str = ""
     feishu_verification_token: str = ""
 
-    # Claude API
-    anthropic_api_key: str = ""
-    claude_model: str = "claude-sonnet-4-20250514"
+    # AI API (OpenAI-compatible: Deepseek, GPT, Kimi, etc.)
+    ai_api_key: str = ""
+    ai_base_url: str = "https://api.deepseek.com"
+    ai_model: str = "deepseek-chat"
+
+    # Gemini
+    gemini_api_key: str = ""
+
+    # Feishu user
+    feishu_user_open_id: str = ""
 
     # Paths
     vault_path: str = str(PROJECT_ROOT / "vault")

@@ -1,0 +1,160 @@
+# HappyCode Agent Team Configuration
+# CEO (主会话) 读取此文件来了解团队结构
+
+team_name: HappyCode
+version: "1.0"
+
+# 项目根目录
+project_root: ~/Happycode2026
+
+# 共享资源
+shared:
+  knowledge_base: ~/Happycode2026/vault/
+  memory: ~/Happycode2026/vault/memory/
+  skills: ~/Happycode2026/team/shared/skills/
+  conventions: ~/Happycode2026/team/shared/conventions.md
+
+# 任务管理目录
+tasks:
+  queue: ~/Happycode2026/team/tasks/queue/       # 待分配
+  active: ~/Happycode2026/team/tasks/active/     # 执行中
+  review: ~/Happycode2026/team/tasks/review/     # 待验收
+  done: ~/Happycode2026/team/tasks/done/         # 已完成
+  failed: ~/Happycode2026/team/tasks/failed/     # 失败
+
+# 角色定义
+roles:
+  ceo:
+    name: CEO (你 - 主会话)
+    responsibilities:
+      - 接收用户需求，拆解成任务
+      - 分配任务给合适的角色
+      - 验收交付物，确保质量
+      - 闭环管理，跟踪进度
+      - 协调角色间的依赖
+    model: claude-opus-4-6
+
+  backend:
+    name: 后端工程师
+    responsibilities:
+      - Python/Node.js 后端开发
+      - API 设计与实现
+      - 数据库设计与优化
+      - 基础设施和运维脚本
+      - 性能优化
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Bash,Glob,Grep,Agent,WebFetch,WebSearch"
+    budget: 5.0
+
+  frontend:
+    name: 前端工程师
+    responsibilities:
+      - Web UI 开发 (React/Next.js/HTML)
+      - CSS/动画/交互设计实现
+      - 响应式布局
+      - 前端性能优化
+      - 组件库开发
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Bash,Glob,Grep,Agent,WebFetch"
+    budget: 5.0
+
+  reviewer:
+    name: 代码审查员
+    responsibilities:
+      - 代码质量审查
+      - 安全漏洞扫描
+      - 性能瓶颈识别
+      - 架构合理性评估
+      - 测试覆盖率检查
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Bash,Glob,Grep,Agent"
+    budget: 3.0
+
+  pm:
+    name: 产品经理
+    responsibilities:
+      - 需求分析和 PRD 编写
+      - 用户故事拆解
+      - 优先级排序
+      - 竞品分析
+      - 验收标准定义
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent"
+    budget: 3.0
+
+  researcher:
+    name: 研究员
+    responsibilities:
+      - 技术调研和选型
+      - 市场和竞品分析
+      - 最佳实践总结
+      - 文档和教程整理
+      - 知识库内容采集
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent"
+    budget: 3.0
+
+  devops:
+    name: DevOps 工程师
+    responsibilities:
+      - Shell 脚本和系统自动化
+      - launchd / cron 服务管理
+      - 系统监控和告警
+      - 日志管理和故障排查
+      - 部署和环境配置
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Bash,Glob,Grep,Agent"
+    budget: 3.0
+
+  qa:
+    name: QA 测试工程师
+    responsibilities:
+      - 测试策略制定
+      - pytest 自动化测试
+      - TDD 工作流
+      - 测试覆盖率分析
+      - 缺陷报告和回归测试
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Bash,Glob,Grep,Agent"
+    budget: 3.0
+
+  cmo:
+    name: 营销总监
+    responsibilities:
+      - 营销策略和内容创作
+      - 用户增长分析
+      - 社交媒体和社区运营
+      - 竞品营销分析
+      - 品牌定位和传播
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,Agent"
+    budget: 3.0
+
+  cfo:
+    name: 财务总监
+    responsibilities:
+      - API/服务成本核算
+      - 预算规划和跟踪
+      - ROI 分析和优化
+      - Worker 任务成本统计
+      - 月度财务总结
+    model: claude-sonnet-4-6
+    allowed_tools: "Read,Write,Edit,Glob,Grep,Agent"
+    budget: 2.0
+
+# 任务状态流转
+task_flow:
+  - queued       # CEO 创建任务，放入队列
+  - assigned     # CEO 分配给角色
+  - in_progress  # Worker 开始执行
+  - review       # Worker 完成，等待 CEO 验收
+  - approved     # CEO 验收通过
+  - rejected     # CEO 验收不通过，返回修改
+  - done         # 归档
+
+# 任务优先级
+priorities:
+  - P0_urgent    # 立即处理
+  - P1_high      # 当天完成
+  - P2_medium    # 本周完成
+  - P3_low       # 有空再做

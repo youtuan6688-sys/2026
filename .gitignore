@@ -6,3 +6,6 @@ data/
 logs/
 .obsidian/
 vault/.obsidian/
+.claude/
+.coverage
+vault/

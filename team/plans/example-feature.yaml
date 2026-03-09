@@ -1,0 +1,30 @@
+plan_id: example-feature
+tasks:
+  - role: pm
+    id: feat-prd
+    desc: "分析需求，写 PRD 和验收标准"
+    priority: P1_high
+  - role: researcher
+    id: feat-research
+    desc: "调研相关技术方案，输出对比报告"
+    priority: P1_high
+  - role: backend
+    id: feat-backend
+    desc: "根据 PRD 实现后端 API"
+    priority: P1_high
+    depends: feat-prd
+  - role: frontend
+    id: feat-frontend
+    desc: "根据 PRD 实现前端界面"
+    priority: P1_high
+    depends: feat-prd
+  - role: qa
+    id: feat-test
+    desc: "编写测试用例并执行测试"
+    priority: P2_medium
+    depends: feat-backend,feat-frontend
+  - role: reviewer
+    id: feat-review
+    desc: "审查所有代码变更"
+    priority: P2_medium
+    depends: feat-backend,feat-frontend

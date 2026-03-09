@@ -10,30 +10,46 @@ logger = logging.getLogger(__name__)
 class XiaohongshuParser(BaseParser):
     """Parser for Xiaohongshu (小红书) posts.
 
-    Xiaohongshu heavily blocks scraping, so we try multiple strategies:
-    1. Fetch with mobile UA and extract meta tags
-    2. Fall back to generic parser
+    Uses Playwright browser to bypass anti-scraping protections.
+    Falls back to meta tag extraction if browser fails.
     """
 
     def parse(self, url: str) -> ParsedContent:
         try:
-            html = self.fetch(url)
+            # Use browser for better content extraction
+            html = self.fetch_with_browser(url, wait_seconds=3.0)
             soup = BeautifulSoup(html, "lxml")
 
             # Try og meta tags first
-            title = self._get_meta(soup, "og:title") or soup.title.get_text(strip=True) if soup.title else ""
+            title = self._get_meta(soup, "og:title") or ""
+            if not title and soup.title:
+                title = soup.title.get_text(strip=True)
+
             description = self._get_meta(soup, "og:description") or ""
             author = self._get_meta(soup, "og:author") or self._get_meta(soup, "author") or ""
             image = self._get_meta(soup, "og:image") or ""
 
-            content = description
+            # Try extracting full content from rendered page
+            content = ""
+            content_div = soup.find("div", id="detail-desc") or soup.find("div", class_="note-content")
+            if content_div:
+                content = content_div.get_text(separator="\n", strip=True)
+
+            # Also try span-based content (common in rendered XHS pages)
             if not content:
-                # Try extracting from page content
-                content_div = soup.find("div", class_="note-content") or soup.find("div", id="detail-desc")
-                if content_div:
-                    content = content_div.get_text(separator="\n", strip=True)
+                desc_spans = soup.select("span.note-text, span[class*='desc']")
+                if desc_spans:
+                    content = "\n".join(s.get_text(strip=True) for s in desc_spans)
+
+            if not content:
+                content = description
 
             images = [image] if image else []
+            # Collect more images from page
+            for img in soup.select("img[src*='xhscdn'], img[src*='xiaohongshu']"):
+                src = img.get("src", "")
+                if src and src not in images:
+                    images.append(src)
 
             return ParsedContent(
                 url=url,

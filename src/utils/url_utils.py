@@ -12,9 +12,28 @@ PLATFORM_PATTERNS = {
 URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 
 
+def _is_real_url(url: str) -> bool:
+    """Filter out fake URLs like http://learnings.md/) that come from markdown text."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    # Must have at least one dot in the domain
+    if "." not in host:
+        return False
+    # Filter out single-word TLDs that are likely file extensions mistaken as URLs
+    # e.g. http://tools.md, http://memory.md
+    parts = host.split(".")
+    if len(parts) == 2 and parts[1] in ("md", "txt", "py", "js", "ts", "css", "html", "json", "yaml", "yml", "toml", "cfg", "ini", "log", "sh", "bat"):
+        return False
+    # Strip trailing punctuation from path that got included
+    if parsed.path.endswith(")") or parsed.path.endswith("）"):
+        return False
+    return True
+
+
 def extract_urls(text: str) -> list[str]:
     """Extract all URLs from text."""
-    return URL_REGEX.findall(text)
+    urls = URL_REGEX.findall(text)
+    return [u for u in urls if _is_real_url(u)]
 
 
 def detect_platform(url: str) -> str:

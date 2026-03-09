@@ -1,7 +1,7 @@
 import json
 import logging
-
-import anthropic
+import os
+import subprocess
 
 from config.prompts import ANALYSIS_PROMPT, RELATION_PROMPT
 from config.settings import Settings
@@ -9,20 +9,45 @@ from src.models.content import ParsedContent, AnalyzedContent
 
 logger = logging.getLogger(__name__)
 
+CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
+
+ANALYSIS_SCHEMA = json.dumps({
+    "type": "object",
+    "properties": {
+        "tags": {"type": "array", "items": {"type": "string"}},
+        "summary": {"type": "string"},
+        "category": {
+            "type": "string",
+            "enum": ["tech", "business", "lifestyle", "culture", "science",
+                     "design", "finance", "health", "education", "other"],
+        },
+        "key_points": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["tags", "summary", "category", "key_points"],
+})
+
+RELATION_SCHEMA = json.dumps({
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        "required": ["id", "reason"],
+    },
+})
+
 
 class AIAnalyzer:
     def __init__(self, settings: Settings, vector_store=None):
-        self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        self.model = settings.claude_model
         self.max_length = settings.max_content_length
         self.vector_store = vector_store
 
     def analyze(self, content: ParsedContent) -> AnalyzedContent:
         """Run AI analysis: generate tags, summary, category, and find related content."""
-        # Step 1: Tags + Summary + Category
         analysis = self._analyze_content(content)
 
-        # Step 2: Find related content via vector similarity
         related = []
         if self.vector_store:
             try:
@@ -39,9 +64,58 @@ class AIAnalyzer:
             related=related,
         )
 
+    def _call_ai(self, prompt: str, json_schema: str = "") -> dict | list | str:
+        """Call Claude Code CLI with optional structured JSON output.
+
+        When json_schema is provided, uses --output-format json + --json-schema
+        and returns the parsed structured_output directly.
+        Otherwise returns raw text output.
+        """
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        cmd = [
+            CLAUDE_PATH, "-p", prompt,
+            "--model", "sonnet",
+        ]
+
+        if json_schema:
+            cmd.extend(["--output-format", "json", "--json-schema", json_schema])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd="/Users/tuanyou",
+            env=env,
+        )
+
+        if result.returncode != 0:
+            logger.warning(f"Claude CLI stderr: {result.stderr[:300]}")
+
+        stdout = result.stdout.strip()
+
+        if json_schema and stdout:
+            envelope = json.loads(stdout)
+            structured = envelope.get("structured_output")
+            if structured is not None:
+                return structured
+            # Fallback: parse result text if structured_output missing
+            return self._parse_json_response(envelope.get("result", ""))
+
+        return stdout
+
+    def _parse_json_response(self, text: str) -> dict | list:
+        """Parse JSON from AI response, handling markdown fences."""
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        return json.loads(text)
+
     def _analyze_content(self, content: ParsedContent) -> dict:
-        """Call Claude API to analyze content."""
+        """Call AI to analyze content."""
         text = content.content[:self.max_length]
+        if content.images:
+            img_list = "\n".join(content.images[:5])
+            text += f"\n\n[附带图片]\n{img_list}"
         prompt = ANALYSIS_PROMPT.format(
             title=content.title,
             platform=content.platform,
@@ -49,18 +123,7 @@ class AIAnalyzer:
         )
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            result_text = response.content[0].text.strip()
-
-            # Handle potential markdown fences
-            if result_text.startswith("```"):
-                result_text = result_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-
-            return json.loads(result_text)
+            return self._call_ai(prompt, json_schema=ANALYSIS_SCHEMA)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI response as JSON: {e}")
             return {"tags": [], "summary": content.title, "category": "other", "key_points": []}
@@ -74,7 +137,6 @@ class AIAnalyzer:
         if not similar:
             return []
 
-        # Use Claude to evaluate which are truly related
         summaries_text = "\n".join(
             f"- id: {s['id']}, 标题: {s.get('title', '未知')}, 摘要: {s.get('summary', '')}"
             for s in similar
@@ -88,18 +150,8 @@ class AIAnalyzer:
         )
 
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=512,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            result_text = response.content[0].text.strip()
-            if result_text.startswith("```"):
-                result_text = result_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            relations = self._call_ai(prompt, json_schema=RELATION_SCHEMA)
 
-            relations = json.loads(result_text)
-
-            # Enrich with titles
             id_to_title = {s["id"]: s.get("title", "") for s in similar}
             for r in relations:
                 r["title"] = id_to_title.get(r["id"], "")

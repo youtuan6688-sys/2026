@@ -10,13 +10,14 @@ logger = logging.getLogger(__name__)
 class DouyinParser(BaseParser):
     """Parser for Douyin (抖音) videos.
 
-    Extracts title and description from meta tags.
-    Video transcription is not supported in v1.
+    Uses Playwright browser to get rendered page content.
+    Extracts title, description from meta tags and page content.
     """
 
     def parse(self, url: str) -> ParsedContent:
         try:
-            html = self.fetch(url)
+            # Use browser for better content extraction
+            html = self.fetch_with_browser(url, wait_seconds=3.0)
             soup = BeautifulSoup(html, "lxml")
 
             title = self._get_meta(soup, "og:title") or ""
@@ -27,7 +28,21 @@ class DouyinParser(BaseParser):
             author = self._get_meta(soup, "og:author") or ""
             image = self._get_meta(soup, "og:image") or ""
 
-            content = f"{title}\n\n{description}" if description else title
+            # Try to get more content from rendered page
+            content_parts = []
+            if title:
+                content_parts.append(title)
+            if description:
+                content_parts.append(description)
+
+            # Look for video description in rendered DOM
+            desc_el = soup.select_one("span[class*='desc'], div[class*='desc']")
+            if desc_el:
+                desc_text = desc_el.get_text(strip=True)
+                if desc_text and desc_text not in content_parts:
+                    content_parts.append(desc_text)
+
+            content = "\n\n".join(content_parts) if content_parts else ""
             images = [image] if image else []
 
             return ParsedContent(

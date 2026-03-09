@@ -130,12 +130,18 @@ summary: >
             )
             related_section = f"\n\n## 相关内容\n\n{links}"
 
+        images_section = ""
+        if parsed.images:
+            imgs = "\n".join(f"![image]({img})" for img in parsed.images)
+            images_section = f"\n\n## 图片\n\n{imgs}"
+
         body = f"""
 
 ## 摘要
 
 {analyzed.summary}
 {key_points}
+{images_section}
 
 ## 内容
 

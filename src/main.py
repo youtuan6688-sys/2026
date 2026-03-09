@@ -7,24 +7,23 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config.settings import settings
 from src.feishu_listener import start_listener
+from src.feishu_sender import FeishuSender
 from src.message_router import MessageRouter
 from src.ai.analyzer import AIAnalyzer
 from src.storage.vector_store import VectorStore
 from src.storage.content_index import ContentIndex
 from src.storage.obsidian_writer import ObsidianWriter
+from src.utils.error_tracker import ErrorTracker
 
 
 def main():
     # Setup logging
+    log_file = Path(settings.vault_path).parent / "logs" / "service.log"
     logging.basicConfig(
         level=getattr(logging, settings.log_level),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(
-                Path(settings.vault_path).parent / "logs" / "service.log",
-                encoding="utf-8",
-            ),
+            logging.FileHandler(log_file, encoding="utf-8"),
         ],
     )
     logger = logging.getLogger(__name__)
@@ -42,12 +41,14 @@ def main():
     content_index = ContentIndex(settings.sqlite_path)
     ai_analyzer = AIAnalyzer(settings, vector_store)
     writer = ObsidianWriter(settings, vector_store, content_index)
-    router = MessageRouter(ai_analyzer, writer, content_index)
+    sender = FeishuSender(settings)
+    error_tracker = ErrorTracker()
+    router = MessageRouter(ai_analyzer, writer, content_index, sender, vector_store, error_tracker)
 
     logger.info("All components initialized. Starting Feishu listener...")
 
     # Start Feishu WebSocket listener (blocking)
-    start_listener(settings, router.handle_message)
+    start_listener(settings, router.handle_message, feishu_sender=sender)
 
 
 if __name__ == "__main__":
