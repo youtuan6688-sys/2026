@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from collections import OrderedDict
 from pathlib import Path
 
@@ -115,13 +116,26 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
             msg_type = msg.message_type
             content = json.loads(msg.content)
 
+            # Dispatch to handler in a thread to avoid blocking the asyncio
+            # event loop.  Blocking here prevents WebSocket pings from being
+            # sent/received, causing keepalive timeouts and reconnect storms.
+            def _dispatch(reply, txt, raw, ct, soid):
+                try:
+                    message_handler_callback(reply, txt, raw, chat_type=ct, sender_open_id=soid)
+                except Exception as exc:
+                    logger.error(f"Handler error: {exc}", exc_info=True)
+
             if msg_type == "text":
                 text = content.get("text", "")
                 # Remove @mention placeholders (e.g., @_user_1)
                 for key in mention_keys:
                     text = text.replace(key, "").strip()
                 logger.info(f"Received text [{chat_type}] from {sender_id}: {text[:100]}")
-                message_handler_callback(reply_id, text, msg, chat_type=chat_type, sender_open_id=sender_id)
+                threading.Thread(
+                    target=_dispatch,
+                    args=(reply_id, text, msg, chat_type, sender_id),
+                    daemon=True,
+                ).start()
 
             elif msg_type == "post":
                 # Rich text: extract all text and links
@@ -150,7 +164,11 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
                 for key in mention_keys:
                     text = text.replace(key, "").strip()
                 logger.info(f"Received post [{chat_type}] from {sender_id}: {text[:100]}")
-                message_handler_callback(reply_id, text, msg, chat_type=chat_type, sender_open_id=sender_id)
+                threading.Thread(
+                    target=_dispatch,
+                    args=(reply_id, text, msg, chat_type, sender_id),
+                    daemon=True,
+                ).start()
 
             elif msg_type == "share_chat" or msg_type == "share_user":
                 logger.info(f"Received share message, skipping: {msg_type}")
@@ -159,7 +177,11 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
                 # For other types (image, file, etc.), try to get any text
                 text = content.get("text", "")
                 if text:
-                    message_handler_callback(reply_id, text, msg, chat_type=chat_type, sender_open_id=sender_id)
+                    threading.Thread(
+                        target=_dispatch,
+                        args=(reply_id, text, msg, chat_type, sender_id),
+                        daemon=True,
+                    ).start()
                 else:
                     logger.info(f"Received unsupported message type: {msg_type}")
 
