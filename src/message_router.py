@@ -1449,7 +1449,7 @@ class MessageRouter:
                 self._buffer_conversation(
                     user_id=user_id, user_name=user_name,
                     user_msg=prompt, bot_reply=output,
-                    chat_type="group",
+                    chat_type="group", chat_id=sender_id,
                 )
 
             except subprocess.TimeoutExpired:
@@ -1464,7 +1464,8 @@ class MessageRouter:
 
     def _buffer_conversation(self, user_id: str, user_name: str,
                              user_msg: str, bot_reply: str,
-                             chat_type: str = "p2p"):
+                             chat_type: str = "p2p",
+                             chat_id: str = ""):
         """Buffer conversation for daily opus evolution (no real-time AI calls)."""
         entry = {
             "ts": datetime.now().isoformat(),
@@ -1473,6 +1474,7 @@ class MessageRouter:
             "user_msg": user_msg[:500],
             "bot_reply": bot_reply[:1000],
             "chat_type": chat_type,
+            "chat_id": chat_id,
         }
         buffer_file = BUFFER_DIR / f"{date.today().isoformat()}.jsonl"
         try:

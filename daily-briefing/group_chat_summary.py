@@ -1,13 +1,14 @@
-"""Generate and send daily group chat summary to Feishu group.
+"""Generate and send daily group chat summary to each Feishu group.
 
-Reads today's daily_buffer, calls sonnet to produce a fun recap,
-and sends to the group chat. Designed to run via cron before
-daily_evolution archives the buffer.
+Reads today's daily_buffer, groups messages by chat_id,
+generates a separate summary per group, and sends each to its own group.
+Designed to run via launchd before daily_evolution archives the buffer.
 """
 
 import json
 import logging
 import sys
+from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
@@ -24,28 +25,31 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BUFFER_DIR = Path("/Users/tuanyou/Happycode2026/data/daily_buffer")
-GROUP_CHAT_ID = "oc_4f17f731a0a3bf9489c095c26be6dedc"
 MIN_MESSAGES = 3  # Skip summary if fewer than this many group messages
 
 
-def load_group_messages(target_date: date = None) -> list[dict]:
-    """Load today's group chat messages from buffer."""
+def load_group_messages_by_chat(target_date: date = None) -> dict[str, list[dict]]:
+    """Load today's group messages, grouped by chat_id."""
     d = target_date or date.today()
     buffer_file = BUFFER_DIR / f"{d.isoformat()}.jsonl"
     if not buffer_file.exists():
-        return []
+        return {}
 
-    messages = []
+    groups: dict[str, list[dict]] = defaultdict(list)
     for line in buffer_file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
             entry = json.loads(line)
             if entry.get("chat_type") == "group":
-                messages.append(entry)
+                chat_id = entry.get("chat_id", "")
+                # Backwards compat: old entries without chat_id go to default
+                if not chat_id:
+                    chat_id = "unknown"
+                groups[chat_id].append(entry)
         except json.JSONDecodeError:
             continue
-    return messages
+    return dict(groups)
 
 
 def format_conversations(messages: list[dict]) -> str:
@@ -90,33 +94,40 @@ SUMMARY_PROMPT = """你是一个群聊日报编辑，风格幽默、简洁。
 
 def main():
     today = date.today()
-    messages = load_group_messages(today)
+    groups = load_group_messages_by_chat(today)
 
-    if len(messages) < MIN_MESSAGES:
-        logger.info(
-            f"Only {len(messages)} group messages today, "
-            f"skipping summary (min={MIN_MESSAGES})"
-        )
+    if not groups:
+        logger.info("No group messages today, skipping summary")
         return
 
-    conversations = format_conversations(messages)
-    prompt = SUMMARY_PROMPT.format(
-        date=today.isoformat(),
-        conversations=conversations,
-    )
-
-    # Generate summary via sonnet (with quota tracking)
     tracker = QuotaTracker()
-    summary = tracker.call_claude(prompt, model="sonnet", timeout=60)
-
-    if not summary:
-        logger.warning("Failed to generate group chat summary")
-        return
-
-    # Send to group
     sender = FeishuSender(settings)
-    sender.send_text(GROUP_CHAT_ID, summary)
-    logger.info(f"Group chat summary sent ({len(messages)} messages)")
+
+    for chat_id, messages in groups.items():
+        if len(messages) < MIN_MESSAGES:
+            logger.info(
+                f"Chat {chat_id}: only {len(messages)} messages, "
+                f"skipping (min={MIN_MESSAGES})"
+            )
+            continue
+
+        if chat_id == "unknown":
+            logger.warning("Skipping messages without chat_id (old format)")
+            continue
+
+        conversations = format_conversations(messages)
+        prompt = SUMMARY_PROMPT.format(
+            date=today.isoformat(),
+            conversations=conversations,
+        )
+
+        summary = tracker.call_claude(prompt, model="sonnet", timeout=60)
+        if not summary:
+            logger.warning(f"Failed to generate summary for chat {chat_id}")
+            continue
+
+        sender.send_text(chat_id, summary)
+        logger.info(f"Summary sent to {chat_id} ({len(messages)} messages)")
 
 
 if __name__ == "__main__":
