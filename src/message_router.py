@@ -24,6 +24,7 @@ from src.contact_memory import ContactMemory
 from src.concurrency import MessageGate
 from src.quota_tracker import QuotaTracker
 from src import tmux_manager
+from src import task_scheduler
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +260,16 @@ class MessageRouter:
     _LOOP_PATTERNS = re.compile(
         r"(定时|循环|每隔|loop|cron|定期|巡检|监控.*(?:启动|停止|状态))"
     )
+    _SCHEDULE_PATTERNS = re.compile(
+        r"(每\s*\d+\s*分钟|每\s*\d+\s*小时|每天|每日|每周|定时.*(?:查|看|监控|提醒|发|推)"
+        r"|帮我.*(?:盯|监控|提醒|定时)|(?:分钟|小时).*(?:一次|提醒|推送|查看))"
+    )
+    _APPROVAL_PATTERNS = re.compile(
+        r"^(同意|批准|approve|ok|可以|行|准了|通过|yes)\s*$", re.IGNORECASE
+    )
+    _REJECT_PATTERNS = re.compile(
+        r"^(拒绝|不行|reject|no|否|算了|不用)\s*$", re.IGNORECASE
+    )
     _SESSION_PATTERNS = re.compile(
         r"(会话|session|运行中|停止.*会话|查看.*输出|后台.*任务)"
     )
@@ -445,6 +456,24 @@ class MessageRouter:
                     except Exception as e:
                         logger.error(f"Failed to process URL {url}: {e}", exc_info=True)
                         self.sender.send_error(sender_id, url, str(e)[:200])
+                return
+
+            # Group: admin approval/rejection for pending tasks
+            if user_id == task_scheduler.ADMIN_OPEN_ID:
+                if self._APPROVAL_PATTERNS.match(stripped):
+                    self._handle_task_approval(sender_id)
+                    return
+                if self._REJECT_PATTERNS.match(stripped):
+                    self._handle_task_rejection(sender_id)
+                    return
+                # Admin can also manage tasks
+                if stripped == "/tasks":
+                    self.sender.send_text(sender_id, task_scheduler.format_tasks())
+                    return
+
+            # Group: detect schedule requests → ask admin for approval
+            if self._SCHEDULE_PATTERNS.search(stripped):
+                self._handle_schedule_request(stripped, sender_id, user_id)
                 return
 
             # Group: all other messages → 小叼毛 persona chat
@@ -782,6 +811,104 @@ class MessageRouter:
             logger.warning(f"Natural session handling failed: {e}")
             status = tmux_manager.format_status()
             self.sender.send_text(sender_id, status)
+
+    # ── Scheduled Task Management (approval flow) ──
+
+    def _handle_schedule_request(self, text: str, sender_id: str, user_id: str):
+        """Parse a schedule request from group chat and ask admin for approval."""
+        user_name = self.contacts.get_name(user_id) if user_id else "群友"
+
+        # Use haiku to parse the request into structured data
+        prompt = (
+            "用户在群里请求了一个定时任务。解析消息，只输出一行 JSON：\n"
+            '{"description":"简短描述","prompt":"要执行的具体指令","interval_min":数字,"one_shot":false}\n'
+            "- interval_min: 执行间隔（分钟），每天=1440，每小时=60\n"
+            "- one_shot: 是否只执行一次\n"
+            "- prompt: 具体要 AI 做的事情（搜索、查价格、分析等）\n"
+            "- 如果涉及股票监控，prompt 里要包含股票名称和代码\n\n"
+            f"消息: {text}"
+        )
+        try:
+            raw = self.quota.call_claude(prompt, "haiku", timeout=30)
+            # Strip markdown code blocks if present
+            raw = raw.strip().strip("`").strip()
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+            parsed = json.loads(raw)
+        except Exception as e:
+            logger.warning(f"Schedule request parsing failed: {e}")
+            # Fallback: let persona handle it naturally
+            self._add_turn("user", text, chat_id=sender_id, user_name=user_name)
+            self._execute_claude_group(text, sender_id, user_id=user_id)
+            return
+
+        desc = parsed.get("description", text[:50])
+        task_prompt = parsed.get("prompt", text)
+        interval = parsed.get("interval_min", 60)
+        one_shot = parsed.get("one_shot", False)
+
+        # Create pending request
+        req = task_scheduler.create_pending_request(
+            description=desc,
+            prompt=task_prompt,
+            interval_min=interval,
+            requested_by=user_id,
+            requester_name=user_name,
+            one_shot=one_shot,
+        )
+
+        # @mention admin for approval
+        interval_str = f"每{interval}分钟" if interval and not one_shot else "一次性"
+        msg = (
+            f"老板，{user_name} 想加个定时任务：\n\n"
+            f"📌 {desc}\n"
+            f"⏰ {interval_str}\n"
+            f"📝 {task_prompt[:100]}\n\n"
+            f"请求ID: {req['id']}\n"
+            f"回复「同意」或「拒绝」"
+        )
+        self.sender.send_text_at(
+            sender_id, msg,
+            at_user_id=task_scheduler.ADMIN_OPEN_ID,
+            at_user_name="老板",
+        )
+
+    def _handle_task_approval(self, sender_id: str):
+        """Admin approved the latest pending task request."""
+        latest = task_scheduler.get_latest_pending()
+        if not latest:
+            self.sender.send_text(sender_id, "没有待审批的定时任务请求")
+            return
+
+        task = task_scheduler.approve_pending(latest["id"])
+        if not task:
+            self.sender.send_text(sender_id, "审批失败，请求可能已过期")
+            return
+
+        interval_str = f"每{task['interval_min']}分钟" if task["interval_min"] and not task["one_shot"] else "一次性"
+        requester = latest.get("requester_name", "群友")
+        self.sender.send_text(
+            sender_id,
+            f"✅ 已批准并创建定时任务！\n\n"
+            f"📌 {task['description']}\n"
+            f"⏰ {interval_str}\n"
+            f"👤 请求者: {requester}\n"
+            f"🆔 任务ID: {task['id']}",
+        )
+
+    def _handle_task_rejection(self, sender_id: str):
+        """Admin rejected the latest pending task request."""
+        latest = task_scheduler.get_latest_pending()
+        if not latest:
+            self.sender.send_text(sender_id, "没有待审批的定时任务请求")
+            return
+
+        task_scheduler.reject_pending(latest["id"])
+        requester = latest.get("requester_name", "群友")
+        self.sender.send_text(
+            sender_id,
+            f"❌ 已拒绝 {requester} 的定时任务请求: {latest['description']}",
+        )
 
     # ── Feishu Document Management ──
 
