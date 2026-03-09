@@ -261,6 +261,40 @@ def _append_to_memory(filename: str, text: str):
         f.write(f"\n{text}")
 
 
+def _notify_group(target_date: date, persona_result: str,
+                   contact_results: dict, knowledge_result: str):
+    """Send evolution summary to group chat."""
+    try:
+        from config.settings import settings as app_settings
+        from src.feishu_sender import FeishuSender
+
+        GROUP_CHAT_ID = "oc_4f17f731a0a3bf9489c095c26be6dedc"
+        sections = [f"🧬 每日进化报告 [{target_date}]"]
+
+        # Persona
+        if persona_result and "No notable" not in persona_result and "No group" not in persona_result:
+            sections.append(f"\n🎭 人设更新:\n{persona_result[:500]}")
+
+        # Contacts
+        if contact_results:
+            names = list(contact_results.keys())[:5]
+            sections.append(f"\n👥 联系人更新: {len(contact_results)} 人")
+
+        # Knowledge
+        if knowledge_result and "No notable" not in knowledge_result and "No private" not in knowledge_result:
+            sections.append(f"\n📚 新知识:\n{knowledge_result[:500]}")
+
+        # Only send if there's actual content beyond the header
+        if len(sections) > 1:
+            sender = FeishuSender(app_settings)
+            sender.send_text(GROUP_CHAT_ID, "\n".join(sections))
+            logger.info("Evolution summary sent to group chat")
+        else:
+            logger.info("No evolution updates to report to group")
+    except Exception as e:
+        logger.warning(f"Failed to send evolution summary to group: {e}")
+
+
 def run_daily_evolution(target_date: date = None):
     """Main entry point: run all evolution tasks for a given date."""
     target_date = target_date or date.today()
@@ -273,6 +307,9 @@ def run_daily_evolution(target_date: date = None):
 
     logger.info(f"Processing {len(entries)} conversation entries")
     failures = 0
+    persona_result = ""
+    contact_results = {}
+    knowledge_result = ""
 
     # 1. Persona evolution
     try:
@@ -306,6 +343,9 @@ def run_daily_evolution(target_date: date = None):
     except Exception as e:
         failures += 1
         logger.error(f"Knowledge extraction failed: {e}", exc_info=True)
+
+    # Notify group chat with evolution results
+    _notify_group(target_date, persona_result, contact_results, knowledge_result)
 
     # Only archive buffer if all tasks succeeded; keep for retry otherwise
     if failures == 0:
