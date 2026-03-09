@@ -83,10 +83,16 @@ class ContactMemory:
             )
 
     def touch(self, open_id: str):
-        """Update last_seen and message_count."""
+        """Update last_seen and message_count. Auto-fetch name if missing."""
         profile = self.load(open_id)
         profile["last_seen"] = date.today().isoformat()
         profile["message_count"] = profile.get("message_count", 0) + 1
+        # Auto-fetch name if still empty
+        if not profile.get("name"):
+            name = self._fetch_name(open_id)
+            if name:
+                profile["name"] = name
+                logger.info(f"Auto-fetched name for {open_id}: {name}")
         self.save(open_id, profile)
 
     def get_name(self, open_id: str) -> str:
