@@ -272,6 +272,89 @@ def analyze_image_with_gemini(file_path: Path, gemini_api_key: str,
         return f"图片分析失败: {e}"
 
 
+def split_by_column(file_path: Path, column_name: str,
+                    file_name: str = "") -> list[Path]:
+    """Split an Excel/CSV file by unique values in a column.
+
+    Returns list of generated file paths, one per unique value.
+    """
+    import pandas as pd
+
+    suffix = file_path.suffix.lower()
+    if suffix in EXCEL_EXTENSIONS:
+        df = pd.read_excel(file_path)
+    elif suffix in CSV_EXTENSIONS:
+        df = pd.read_csv(file_path)
+    else:
+        return []
+
+    if column_name not in df.columns:
+        return []
+
+    base_name = Path(file_name or file_path.name).stem
+    output_dir = Path(tempfile.mkdtemp(prefix="feishu_split_"))
+    result_paths = []
+
+    for value, group_df in df.groupby(column_name):
+        safe_name = str(value).replace("/", "_").replace("\\", "_")[:50]
+        out_path = output_dir / f"{safe_name}.xlsx"
+        group_df.to_excel(out_path, index=False)
+        result_paths.append(out_path)
+        if len(result_paths) >= 30:  # safety cap
+            break
+
+    logger.info(f"Split {file_name} by '{column_name}' -> {len(result_paths)} files")
+    return result_paths
+
+
+def detect_file_op(user_text: str, columns: list[str]) -> dict | None:
+    """Detect if user text requests a file operation (split/filter/etc).
+
+    Returns: {"op": "split", "column": "..."} or None.
+    """
+    import re
+    text = user_text.lower()
+
+    # Detect split intent
+    split_keywords = ["拆分", "split", "按.*分成", "按.*拆", "分开", "拆成"]
+    is_split = any(re.search(kw, text) for kw in split_keywords)
+
+    if not is_split:
+        return None
+
+    # Try to find which column from user text
+    # Check exact column name mentions
+    for col in columns:
+        if col in user_text:
+            return {"op": "split", "column": col}
+
+    # Fuzzy: check if column name substring appears
+    for col in columns:
+        col_lower = col.lower()
+        if len(col_lower) >= 2 and col_lower in text:
+            return {"op": "split", "column": col}
+
+    # Can't determine column — return split intent without column
+    return {"op": "split", "column": ""}
+
+
+def get_columns(file_path: Path) -> list[str]:
+    """Get column names from an Excel/CSV file."""
+    import pandas as pd
+
+    suffix = file_path.suffix.lower()
+    try:
+        if suffix in EXCEL_EXTENSIONS:
+            df = pd.read_excel(file_path, nrows=0)
+        elif suffix in CSV_EXTENSIONS:
+            df = pd.read_csv(file_path, nrows=0)
+        else:
+            return []
+        return list(df.columns)
+    except Exception:
+        return []
+
+
 def parse_file(file_path: Path, file_name: str = "",
                gemini_api_key: str = "", user_prompt: str = "") -> tuple[str, str]:
     """Parse a downloaded file and return (content_text, category).

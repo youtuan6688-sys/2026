@@ -4,6 +4,8 @@ from pathlib import Path
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
+    CreateFileRequest,
+    CreateFileRequestBody,
     CreateImageRequest,
     CreateImageRequestBody,
     CreateMessageRequest,
@@ -116,6 +118,61 @@ class FeishuSender:
             return False
         content = json.dumps({"image_key": image_key})
         self._send(open_id, "image", content)
+        return True
+
+    def upload_file(self, file_path: str, file_name: str = "") -> str | None:
+        """Upload a file to Feishu IM and return the file_key.
+
+        Args:
+            file_path: Local path to the file
+            file_name: Display name (defaults to file basename)
+
+        Returns:
+            file_key string, or None on failure.
+        """
+        path = Path(file_path)
+        name = file_name or path.name
+
+        # Map extension to Feishu file_type
+        ext = path.suffix.lower()
+        type_map = {
+            ".xlsx": "xls", ".xls": "xls", ".csv": "xls",
+            ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
+            ".ppt": "ppt", ".pptx": "ppt",
+        }
+        file_type = type_map.get(ext, "stream")
+
+        body = CreateFileRequestBody.builder() \
+            .file_type(file_type) \
+            .file_name(name) \
+            .file(open(file_path, "rb")) \
+            .build()
+
+        request = CreateFileRequest.builder() \
+            .request_body(body) \
+            .build()
+
+        try:
+            response = self.client.im.v1.file.create(request)
+            if not response.success():
+                logger.error(f"Failed to upload file: code={response.code}, msg={response.msg}")
+                return None
+            file_key = response.data.file_key
+            logger.info(f"File uploaded: {name} -> {file_key}")
+            return file_key
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}", exc_info=True)
+            return None
+
+    def send_file(self, receive_id: str, file_path: str,
+                  file_name: str = "") -> bool:
+        """Upload and send a file to a user/group. Returns True on success."""
+        name = file_name or Path(file_path).name
+        file_key = self.upload_file(file_path, name)
+        if not file_key:
+            return False
+        content = json.dumps({"file_key": file_key, "file_name": name})
+        self._send(receive_id, "file", content)
         return True
 
     def send_welcome(self, chat_id: str, name: str, open_id: str | None = None):
