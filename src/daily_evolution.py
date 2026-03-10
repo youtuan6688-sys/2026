@@ -493,6 +493,61 @@ def _write_daily_summary(target_date: date, entries: list[dict],
     logger.info(f"Daily summary written for {target_date}")
 
 
+def _format_metrics_summary(target_date: date) -> str:
+    """Format today's metrics as a concise text block for the admin report."""
+    if not METRICS_FILE.exists():
+        return ""
+    try:
+        all_metrics = json.loads(METRICS_FILE.read_text(encoding="utf-8"))
+        today_m = next((m for m in all_metrics if m.get("date") == target_date.isoformat()), None)
+        if not today_m:
+            return ""
+
+        lines = [
+            f"- 消息: {today_m['total_messages']} (群聊 {today_m['group_messages']}, 私聊 {today_m['p2p_messages']})",
+            f"- 活跃用户: {today_m['unique_users']}",
+            f"- 满意度: +{today_m['positive_signals']} / -{today_m['negative_signals']}",
+        ]
+
+        # Compare with yesterday
+        yesterday = (target_date - timedelta(days=1)).isoformat()
+        prev_m = next((m for m in all_metrics if m.get("date") == yesterday), None)
+        if prev_m and prev_m["total_messages"] > 0:
+            delta = today_m["total_messages"] - prev_m["total_messages"]
+            sign = "+" if delta >= 0 else ""
+            lines.append(f"- 环比: {sign}{delta} 条 vs 昨日")
+
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _generate_weekly_report(target_date: date) -> str:
+    """Generate a 3-line weekly trend summary using sonnet (Sundays only)."""
+    if not METRICS_FILE.exists():
+        return ""
+    try:
+        all_metrics = json.loads(METRICS_FILE.read_text(encoding="utf-8"))
+        week_start = (target_date - timedelta(days=6)).isoformat()
+        week_data = [m for m in all_metrics if m.get("date", "") >= week_start]
+
+        if len(week_data) < 2:
+            return ""
+
+        # Build a compact summary for sonnet
+        data_text = json.dumps(week_data, ensure_ascii=False)
+        prompt = (
+            "根据以下一周的 bot 进化指标数据，生成 3 行趋势摘要。\n"
+            "重点关注：消息量趋势、用户活跃度变化、满意度信号。\n"
+            "直接输出 3 行，不要标题。\n\n"
+            f"数据：{data_text}"
+        )
+        return _call_sonnet(prompt, timeout=30)
+    except Exception as e:
+        logger.warning(f"Weekly report generation failed: {e}")
+        return ""
+
+
 def _notify_admin(target_date: date, persona_result: str,
                    contact_results: dict, knowledge_result: str):
     """Send evolution summary to admin (private chat only, not to groups)."""
@@ -503,18 +558,28 @@ def _notify_admin(target_date: date, persona_result: str,
         ADMIN_ID = "ou_4a18a2e35a5b04262a24f41731046d15"
         sections = [f"🧬 每日进化报告 [{target_date}]"]
 
+        # Metrics summary
+        metrics_text = _format_metrics_summary(target_date)
+        if metrics_text:
+            sections.append(f"\n📊 数据指标:\n{metrics_text}")
+
         # Persona
         if persona_result and "No notable" not in persona_result and "No group" not in persona_result:
             sections.append(f"\n🎭 人设更新:\n{persona_result[:500]}")
 
         # Contacts
         if contact_results:
-            names = list(contact_results.keys())[:5]
             sections.append(f"\n👥 联系人更新: {len(contact_results)} 人")
 
         # Knowledge
         if knowledge_result and "No notable" not in knowledge_result and "No private" not in knowledge_result:
             sections.append(f"\n📚 新知识:\n{knowledge_result[:500]}")
+
+        # Weekly report on Sundays
+        if target_date.weekday() == 6:  # Sunday
+            weekly = _generate_weekly_report(target_date)
+            if weekly:
+                sections.append(f"\n📈 周报:\n{weekly}")
 
         # Only send if there's actual content beyond the header
         if len(sections) > 1:
@@ -524,7 +589,7 @@ def _notify_admin(target_date: date, persona_result: str,
         else:
             logger.info("No evolution updates to report")
     except Exception as e:
-        logger.warning(f"Failed to send evolution summary to group: {e}")
+        logger.warning(f"Failed to send evolution summary to admin: {e}")
 
 
 VAULT_LOGS_DIR = Path("/Users/tuanyou/Happycode2026/vault/logs")

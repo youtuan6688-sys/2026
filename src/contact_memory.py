@@ -244,7 +244,10 @@ class ContactMemory:
         return ""
 
     # Known group chat IDs where bot is a member
-    _KNOWN_CHATS = ["oc_4f17f731a0a3bf9489c095c26be6dedc"]
+    _KNOWN_CHATS = [
+        "oc_4f17f731a0a3bf9489c095c26be6dedc",
+        "oc_d7120356187aed1e651863428e55ab47",  # 人工智障测试组
+    ]
 
     def _fetch_name_from_chats(self, open_id: str) -> str:
         """Fallback: find user name by listing chat members."""

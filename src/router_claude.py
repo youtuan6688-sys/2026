@@ -26,29 +26,45 @@ class ClaudeMixin:
             try:
                 persona = self._load_group_persona()
 
-                parts = [
-                    f"# 你的人设\n{persona}",
-                ]
+                # 铁律 + 人设 → system prompt（高权重）
+                system_prompt = (
+                    "⛔ 铁律（违反任何一条=严重失职，优先级最高）：\n"
+                    "1. 严禁编造数据！你回复中的任何数字、百分比、排名、趋势，"
+                    "必须100%来自用户在对话中明确提供的原始数据。"
+                    "如果没有数据，就说「需要你提供XX数据才能分析」。"
+                    "绝对不能猜、不能推算、不能编示例数据、不能写占位符。"
+                    "违规示例（禁止）：'渗透率<8%'、'客单价¥68'、'占比65%' ← 这些如果不是来自用户文件就是编造。\n"
+                    "2. 严禁空头承诺！不能说「已安排」「正在监控」「帮你拉数据」。"
+                    "你只能处理对话中已有的信息。\n"
+                    "3. 推测性结论必须标注「⚠️ 推测」。\n\n"
+                    f"{persona}"
+                )
+
+                # 用户消息 + 上下文 → user prompt
+                parts = []
 
                 history_text = self._format_history(chat_id=sender_id)
                 if history_text:
-                    parts.append(f"\n# {history_text}")
+                    parts.append(history_text)
 
                 if user_id:
                     user_ctx = self.contacts.format_context(user_id)
-                    parts.append(f"\n# 对话用户信息\n{user_ctx}")
+                    parts.append(f"对话用户信息:\n{user_ctx}")
 
-                parts.append(f"\n# 用户消息\n{prompt}")
+                parts.append(f"用户消息:\n{prompt}")
 
                 kb_context = self._query_knowledge_base(prompt)
                 if kb_context:
-                    parts.append(f"\n{kb_context}")
+                    parts.append(kb_context)
 
                 full_prompt = "\n\n".join(parts)
 
                 output = self.quota.call_claude(
                     full_prompt, "sonnet", timeout=120,
-                    extra_args=["--permission-mode", "auto", "--verbose"],
+                    extra_args=[
+                        "--permission-mode", "auto", "--verbose",
+                        "--append-system-prompt", system_prompt,
+                    ],
                 )
 
                 if not output:

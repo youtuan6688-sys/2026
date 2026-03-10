@@ -16,9 +16,9 @@ from lark_oapi.api.im.v1 import GetMessageResourceRequest
 logger = logging.getLogger(__name__)
 
 # Max text content to send to AI (avoid huge prompts)
-MAX_TEXT_CHARS = 30000
+MAX_TEXT_CHARS = 50000
 # Max rows to preview for large spreadsheets
-MAX_PREVIEW_ROWS = 200
+MAX_PREVIEW_ROWS = 2000
 
 # Supported file extensions
 EXCEL_EXTENSIONS = {".xlsx", ".xls"}

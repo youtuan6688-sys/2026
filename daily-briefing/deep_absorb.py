@@ -13,6 +13,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 from datetime import date
 from pathlib import Path
 
@@ -35,6 +37,9 @@ TOOLS_FILE = MEMORY_DIR / "tools.md"
 # Limits
 MAX_DEEP_READ_URLS = 5
 MAX_EXTRACT_CHARS = 30000
+
+# Watch list state (for delta tracking)
+WATCH_STATE_FILE = PROJECT_DIR / "data" / "watch_state.json"
 
 
 def _call_sonnet(prompt: str, timeout: int = 90, tools: str = "") -> str:
@@ -331,6 +336,130 @@ content_use:
     logger.info(f"Evolution log saved to vault: {log_file}")
 
 
+def _parse_watch_list() -> dict:
+    """Parse watch_list.yaml without PyYAML (simple key-value format)."""
+    if not WATCH_LIST.exists():
+        return {}
+    result = {"github_repos": [], "x_accounts": [], "topics": []}
+    current_key = None
+    for line in WATCH_LIST.read_text(encoding="utf-8").split("\n"):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.endswith(":") and not stripped.startswith("-"):
+            current_key = stripped.rstrip(":")
+            continue
+        if stripped.startswith("- ") and current_key:
+            value = stripped[2:].split("#")[0].strip().strip('"')
+            if value and current_key in result:
+                result[current_key].append(value)
+    return result
+
+
+def _github_api(path: str) -> dict | list | None:
+    """Call GitHub API (unauthenticated, 60 req/hour limit)."""
+    url = f"https://api.github.com{path}"
+    req = urllib.request.Request(url, headers={
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "HappyBot/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as e:
+        logger.debug(f"GitHub API failed for {path}: {e}")
+        return None
+
+
+def _load_watch_state() -> dict:
+    """Load previous watch state for delta comparison."""
+    if WATCH_STATE_FILE.exists():
+        try:
+            return json.loads(WATCH_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_watch_state(state: dict):
+    """Save current watch state."""
+    WATCH_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WATCH_STATE_FILE.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+
+def check_watched_repos() -> str:
+    """Check watch_list repos for notable changes since last check.
+
+    Tracks: star count delta, latest release, recent activity.
+    Returns a markdown summary of changes, or empty string if nothing notable.
+    """
+    watch = _parse_watch_list()
+    repos = watch.get("github_repos", [])
+    if not repos:
+        return ""
+
+    prev_state = _load_watch_state()
+    new_state = {}
+    changes = []
+
+    for repo in repos:
+        data = _github_api(f"/repos/{repo}")
+        if not data:
+            continue
+
+        stars = data.get("stargazers_count", 0)
+        pushed_at = data.get("pushed_at", "")[:10]
+        description = (data.get("description") or "")[:80]
+
+        # Check latest release
+        releases = _github_api(f"/repos/{repo}/releases?per_page=1")
+        latest_release = ""
+        if releases and isinstance(releases, list) and releases:
+            latest_release = releases[0].get("tag_name", "")
+            release_date = releases[0].get("published_at", "")[:10]
+            latest_release = f"{latest_release} ({release_date})"
+
+        # Build current state
+        current = {
+            "stars": stars,
+            "latest_release": latest_release,
+            "pushed_at": pushed_at,
+        }
+        new_state[repo] = current
+
+        # Compare with previous state
+        prev = prev_state.get(repo, {})
+        notable = []
+
+        prev_stars = prev.get("stars", 0)
+        if prev_stars and stars - prev_stars >= 10:
+            notable.append(f"⭐ +{stars - prev_stars} stars ({stars} total)")
+
+        if latest_release and latest_release != prev.get("latest_release", ""):
+            notable.append(f"🚀 新版本: {latest_release}")
+
+        if pushed_at > prev.get("pushed_at", "") and pushed_at == date.today().isoformat():
+            notable.append("📝 今日有更新")
+
+        if notable:
+            changes.append(f"**{repo}**: {'; '.join(notable)}")
+        elif not prev:
+            # First time tracking — record baseline
+            changes.append(f"**{repo}**: 首次追踪 (⭐{stars}, {description})")
+
+    _save_watch_state(new_state)
+
+    if not changes:
+        logger.info(f"Checked {len(repos)} repos, no notable changes")
+        return ""
+
+    result = "### 追踪仓库动态\n" + "\n".join(f"- {c}" for c in changes)
+    logger.info(f"Watch list: {len(changes)} notable changes from {len(repos)} repos")
+    return result
+
+
 def run(report_path: str):
     """Main entry: deep absorb from a briefing report."""
     report_file = Path(report_path)
@@ -370,7 +499,15 @@ def run(report_path: str):
     except Exception as e:
         logger.warning(f"Failed to save evolution log: {e}")
 
-    # Step 6: Compress trends if needed
+    # Step 6: Check watched repos for notable changes
+    try:
+        watch_report = check_watched_repos()
+        if watch_report:
+            _append_section(TRENDS_FILE, f"## {today} - 追踪动态\n{watch_report}")
+    except Exception as e:
+        logger.warning(f"Watch list check failed (non-fatal): {e}")
+
+    # Step 7: Compress trends if needed
     try:
         compress_trends()
     except Exception as e:

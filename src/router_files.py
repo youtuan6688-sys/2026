@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src import file_handler
 from src import stock_query
+from src import chart_generator
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -94,25 +95,38 @@ class FilesMixin:
                 reply = f"📷 图片分析结果：\n\n{content_text}"
                 self.sender.send_text(sender_id, reply)
             else:
+                # 铁律放 system prompt（高权重）
+                sys_rules = (
+                    "你是数据分析助手。严格规则：\n"
+                    "1. 严禁编造数据！所有数字、百分比、排名必须直接来自下方文件内容。"
+                    "没有的数据就说「文件中无此信息」，绝不编造、不推算、不举例。\n"
+                    "2. 不要承诺做不到的事（实时监控、自动提醒等）。\n"
+                    "3. 先给结论，再给数据支撑。用 markdown 表格展示数据。\n"
+                    "4. 推测性结论标注「⚠️ 推测」。\n"
+                )
+                if chat_type == "group":
+                    sys_rules += (
+                        "5. 群聊模式：直接给结果，不寒暄、不角色扮演、不emoji轰炸。"
+                        "结论→数据→建议，500字以内。\n"
+                    )
+
                 if user_prompt:
                     prompt = (
-                        f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
+                        f"文件「{file_name}」({category.upper()}) 内容：\n\n"
                         f"{content_text}\n\n"
-                        f"用户的要求：{user_prompt}\n\n"
-                        f"请根据用户要求分析数据，回复简洁实用，用中文。"
+                        f"用户要求：{user_prompt}"
                     )
                 else:
                     prompt = (
-                        f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
+                        f"文件「{file_name}」({category.upper()}) 内容：\n\n"
                         f"{content_text}\n\n"
-                        f"请分析这个数据：\n"
-                        f"1. 概述数据内容和结构\n"
-                        f"2. 找出关键数据点和趋势\n"
-                        f"3. 给出有价值的洞察\n"
-                        f"回复要简洁实用，用中文。"
+                        f"请分析：1.数据概况 2.关键指标 3.趋势洞察 4.建议"
                     )
 
-                analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
+                analysis = self.quota.call_claude(
+                    prompt, "sonnet", timeout=90,
+                    extra_args=["--append-system-prompt", sys_rules],
+                )
 
                 if analysis:
                     self.sender.send_text(
@@ -124,11 +138,50 @@ class FilesMixin:
                         sender_id,
                         f"分析「{file_name}」时 AI 没有返回结果，请稍后重试 😵",
                     )
+
+                # 自动生成图表（仅 Excel/CSV）
+                if category in ("excel", "csv"):
+                    self._generate_and_send_charts(
+                        sender_id, file_path, file_name, category,
+                    )
         finally:
             try:
                 file_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    def _generate_and_send_charts(self, sender_id: str, file_path: Path,
+                                    file_name: str, category: str):
+        """从 Excel/CSV 生成图表并发送到飞书"""
+        try:
+            import pandas as pd
+
+            if category == "excel":
+                df = pd.read_excel(file_path)
+            else:
+                df = pd.read_csv(file_path)
+
+            if df.empty or len(df.columns) < 2:
+                return
+
+            chart_paths = chart_generator.auto_chart(df, title=file_name)
+
+            for chart_path in chart_paths[:3]:  # 最多发3张图
+                success = self.sender.send_image(sender_id, str(chart_path))
+                if not success:
+                    logger.warning(f"图表发送失败: {chart_path}")
+                # 清理临时图片
+                try:
+                    chart_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+            if chart_paths:
+                logger.info(f"已发送 {len(chart_paths)} 张图表 for {file_name}")
+
+        except Exception as e:
+            logger.warning(f"图表生成失败 ({file_name}): {e}", exc_info=True)
+            # 图表失败不影响文本分析结果，静默跳过
 
     def _fetch_message(self, message_id: str) -> dict | None:
         """Fetch a message by ID from Feishu API."""
