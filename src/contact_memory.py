@@ -188,7 +188,7 @@ class ContactMemory:
         notes = profile.get("notes", [])
         if notes:
             recent = notes[-3:]
-            note_texts = [f"  - {n['text']}" for n in recent]
+            note_texts = [f"  - {n['text'] if isinstance(n, dict) else n}" for n in recent]
             parts.append(f"近期备注:\n" + "\n".join(note_texts))
 
         msg_count = profile.get("message_count", 0)

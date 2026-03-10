@@ -488,6 +488,14 @@ class MessageRouter:
                 self._handle_schedule_request(stripped, sender_id, user_id)
                 return
 
+            # Group: reject unknown slash commands
+            if stripped.startswith("/") and not stripped.startswith("//"):
+                self.sender.send_text(
+                    sender_id,
+                    f"群里不支持 {stripped.split()[0]} 命令，发 /help 看看我能干啥 😏",
+                )
+                return
+
             # Group: all other messages → 小叼毛 persona chat
             user_name = self.contacts.get_name(user_id) if user_id else ""
             self._add_turn("user", stripped, chat_id=sender_id, user_name=user_name)
