@@ -180,6 +180,15 @@ DEFER: <描述，等人确认>
         done
     fi
 
+    # Deep absorption: extract actionable knowledge from report
+    log "Starting deep absorption..."
+    $VENV "$PROJECT_DIR/deep_absorb.py" "$REPORT_FILE" >> "$LOG_FILE" 2>&1
+    if [ $? -eq 0 ]; then
+        log "Deep absorption completed"
+    else
+        log "Deep absorption failed (non-fatal)"
+    fi
+
     log "Briefing completed"
 else
     log "Briefing FAILED"

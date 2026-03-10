@@ -1,0 +1,31 @@
+# 持续追踪的高价值信息源
+# 每日简报会优先检查这些源的最新动态
+
+github_repos:
+  - anthropics/claude-code          # Claude Code 官方
+  - anthropics/anthropic-sdk-python  # Python SDK
+  - anthropics/courses               # 官方教程
+  - modelcontextprotocol/servers     # MCP 官方 servers
+  - everything-claude-code/everything-claude-code  # Skills 生态
+  - sigoden/aichat                   # CLI AI 工具
+
+x_accounts:
+  - alexalbert__        # Anthropic Head of Claude
+  - AnthropicAI         # Anthropic 官方
+  - karpathy            # AI 大牛
+  - swyx                # AI 生态观察者
+  - simonw              # datasette/LLM 工具作者
+  - emollick            # AI 应用研究者
+  - aaborsu             # Claude Code power user
+
+topics:
+  - "claude code"
+  - "MCP server"
+  - "AI agent"
+  - "claude code skill"
+  - "CLAUDE.md"
+  - "anthropic api"
+
+# 搜索频率: 每日一次 (随简报)
+# 追踪逻辑: 对比 repo star 变化、最新 release、新 issue
+# 自动扩展: 简报发现高价值新源时，建议加入此列表

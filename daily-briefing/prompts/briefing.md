@@ -14,6 +14,11 @@
 6. **微信公众号** (通过搜狗微信搜索) - 搜索 "openclaw"、"claude code" 最新文章
 7. **Claude 官方** - 查看 anthropic.com/blog、claude.ai 最新动态
 8. **OpenClaw 官方** - 查看 openclaw 官网和社区最新内容
+9. **GitHub Trending** - 全语言/Python/TypeScript 24h trending，关注 AI/LLM/Agent 类项目
+10. **Hacker News** - 首页 Top 30，筛选 AI/Claude/LLM/编程相关
+11. **技术大牛 X 账号** - 搜索 @karpathy, @swyx, @simonw, @emollick, @alexalbert__ (Anthropic), @AnthropicAI 近24小时发言
+12. **Reddit** - r/ClaudeAI, r/LocalLLaMA 热帖
+13. **Anthropic 文档** - docs.anthropic.com 变更, status.anthropic.com 状态
 
 ## 分析要求
 
