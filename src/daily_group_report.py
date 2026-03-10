@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 
 from config.settings import settings
+from src.adb_bot import ADBBot
 
 logger = logging.getLogger(__name__)
 
@@ -230,12 +231,11 @@ def _extract_highlights(entries: list[dict]) -> dict:
             "new_members": [], "bot_actions": [], "summary": "素材提取失败"}
 
 
-def _write_story(highlights: dict, style: dict,
-                 target_date: date) -> str:
-    """Use DeepSeek to write a creative story in today's style."""
+def _build_story_prompt(highlights: dict, style: dict,
+                        target_date: date) -> str:
+    """Build the creative story prompt."""
     material = json.dumps(highlights, ensure_ascii=False, indent=2)
-
-    prompt = (
+    return (
         f"你是群聊 AI 助手「小叼毛」的创意日报撰稿人。\n\n"
         f"今天的风格：【{style['name']}】— {style['desc']}\n\n"
         f"{style['prompt']}\n\n"
@@ -256,6 +256,24 @@ def _write_story(highlights: dict, style: dict,
         f"直接输出正文，不要元说明。"
     )
 
+
+def _write_story(highlights: dict, style: dict,
+                 target_date: date) -> str:
+    """Write creative story — ADB (phone DeepSeek app) first, API fallback."""
+    prompt = _build_story_prompt(highlights, style, target_date)
+
+    # Try ADB first (free, uses phone DeepSeek app)
+    try:
+        bot = ADBBot()
+        story = bot.deepseek_chat(prompt, timeout=150)
+        if story and not story.startswith("["):
+            logger.info("Story generated via ADB DeepSeek app")
+            return story
+        logger.warning(f"ADB DeepSeek returned incomplete: {story[:50]}")
+    except Exception as e:
+        logger.warning(f"ADB DeepSeek failed, falling back to API: {e}")
+
+    # Fallback: DeepSeek API
     try:
         resp = httpx.post(
             f"{settings.ai_base_url}/chat/completions",
@@ -264,20 +282,67 @@ def _write_story(highlights: dict, style: dict,
                 "model": settings.ai_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 3000,
-                "temperature": 0.9,  # High creativity
+                "temperature": 0.9,
             },
             timeout=90,
         )
         resp.raise_for_status()
+        logger.info("Story generated via DeepSeek API (fallback)")
         return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        logger.error(f"DeepSeek story generation failed: {e}")
+        logger.error(f"DeepSeek API also failed: {e}")
         return f"[日报生成失败: {e}]"
+
+
+def _build_image_prompts(style: dict) -> list[str]:
+    """Build 6 scene prompts for image generation."""
+    return [
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景1：一个可爱的机器人吉祥物（小叼毛）在大屏幕上阅读群聊消息。"
+        f"温暖多彩的氛围，高品质插画。",
+
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景2：群聊成员们热烈讨论，对话气泡四处飞舞。"
+        f"动感构图，鲜艳色彩，高品质。",
+
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景3：机器人吉祥物用巨大的羽毛笔书写今日精华。"
+        f"闪光效果，创意氛围，高品质。",
+
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景4：今日精华金句展示在金色卷轴上。"
+        f"优雅的排版感，装饰边框，高品质。",
+
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景5：机器人吉祥物正在进化升级，发光效果。"
+        f"变身场景，能量粒子，高品质。",
+
+        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
+        f"场景6：结尾画面——机器人吉祥物挥手告别。"
+        f"夕阳/傍晚氛围，温暖感人，高品质。",
+    ]
 
 
 def _generate_images(story: str, style: dict,
                      target_date: date) -> list[Path]:
-    """Generate 6 illustration images using Gemini Imagen."""
+    """Generate 6 images — ADB (phone Gemini app) first, API fallback."""
+    output_dir = REPORT_DIR / target_date.isoformat()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    scene_prompts = _build_image_prompts(style)
+
+    # Try ADB first (free, uses phone Gemini app)
+    try:
+        bot = ADBBot()
+        images = bot.gemini_generate_images(scene_prompts, output_dir)
+        if images:
+            logger.info(f"Generated {len(images)} images via ADB Gemini app")
+            return images
+        logger.warning("ADB Gemini returned no images")
+    except Exception as e:
+        logger.warning(f"ADB Gemini failed, falling back to API: {e}")
+
+    # Fallback: Gemini API
     try:
         from google import genai
     except ImportError:
@@ -290,36 +355,6 @@ def _generate_images(story: str, style: dict,
         return []
 
     client = genai.Client(api_key=api_key)
-    output_dir = REPORT_DIR / target_date.isoformat()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate 6 scene prompts based on the story
-    scene_prompts = [
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 1: A cute robot mascot (小叼毛) reading group chat messages on a big screen. "
-        f"Warm colorful atmosphere, high quality illustration.",
-
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 2: Group chat members having an animated discussion, speech bubbles flying around. "
-        f"Dynamic composition, vibrant colors, high quality.",
-
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 3: The robot mascot writing today's highlights with a giant quill pen. "
-        f"Sparkling effects, creative atmosphere, high quality.",
-
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 4: Best quotes from the day displayed as golden scrolls or banners. "
-        f"Elegant typography feel, decorative borders, high quality.",
-
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 5: The robot mascot evolving/upgrading with glowing effects. "
-        f"Transformation scene, energy particles, high quality.",
-
-        f"Cute cartoon illustration, chibi anime style, {style['name']} theme. "
-        f"Scene 6: End card - the robot mascot waving goodbye with today's date. "
-        f"Sunset/evening atmosphere, warm and heartfelt, high quality.",
-    ]
-
     images = []
     for i, prompt in enumerate(scene_prompts):
         try:
@@ -328,21 +363,15 @@ def _generate_images(story: str, style: dict,
                 prompt=prompt,
                 config={"number_of_images": 1},
             )
-
             if response.generated_images:
                 img_path = output_dir / f"scene_{i + 1}.png"
                 img_data = response.generated_images[0].image.image_bytes
                 img_path.write_bytes(img_data)
                 images.append(img_path)
-                logger.info(f"Generated image {i + 1}/6")
-            else:
-                logger.warning(f"No image generated for scene {i + 1}")
-
-            # Rate limit: don't hammer the API
+                logger.info(f"Generated image {i + 1}/6 via API")
             time.sleep(2)
-
         except Exception as e:
-            logger.warning(f"Image {i + 1} generation failed: {e}")
+            logger.warning(f"API image {i + 1} failed: {e}")
 
     return images
 
