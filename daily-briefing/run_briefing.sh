@@ -37,7 +37,7 @@ export PATH="/Users/tuanyou/.local/bin:$PATH"
 export USER="${USER:-tuanyou}"
 
 # Debug: Check environment
-log "DEBUG: HOME=$HOME, USER=$USER, ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:0:10}..."
+log "DEBUG: HOME=$HOME, USER=$USER, ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:+set}${ANTHROPIC_API_KEY:-unset}"
 log "DEBUG: claude binary: $(which claude)"
 log "DEBUG: CLAUDECODE=${CLAUDECODE:-unset}"
 

@@ -33,12 +33,10 @@ def main():
     sender = FeishuSender(settings)
     msg = f"Daily Briefing {date}\n\n{preview}"
 
-    # Send to admin (private) and group chat
+    # Send to admin only — group gets its own tailored daily summary
+    # via group_chat_summary.py (with topic-matched briefing content)
     sender.send_text(ADMIN_ID, msg)
     print(f"Sent to admin {ADMIN_ID}")
-
-    sender.send_text(GROUP_CHAT_ID, msg)
-    print(f"Sent to group {GROUP_CHAT_ID}")
 
 
 if __name__ == "__main__":
