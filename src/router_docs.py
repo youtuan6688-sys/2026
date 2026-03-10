@@ -107,8 +107,14 @@ class DocsMixin:
             '- 读取记录: {"action":"bt_read","app_token":"token","table_id":"可选"}\n'
             '- 新增记录: {"action":"bt_add","app_token":"token","table_id":"tblXXX","fields":{"字段":"值"}}\n'
             '- 更新记录: {"action":"bt_update","app_token":"token","table_id":"tblXXX","record_id":"recXXX","fields":{"字段":"新值"}}\n'
-            '- 删除记录: {"action":"bt_delete","app_token":"token","table_id":"tblXXX","record_id":"recXXX"}\n\n'
-            "注意：如果用户只是在询问能力，选 inquiry。如果提到多维表格/bitable，优先用 bt_ 前缀的 action。\n\n"
+            '- 删除记录: {"action":"bt_delete","app_token":"token","table_id":"tblXXX","record_id":"recXXX"}\n'
+            "--- 电子表格操作 ---\n"
+            '- 创建电子表格: {"action":"ss_create","title":"表格名称"}\n'
+            '- 查看工作表: {"action":"ss_sheets","token":"电子表格链接或token"}\n'
+            '- 读取单元格: {"action":"ss_read","token":"token","range":"Sheet1!A1:C10"}\n'
+            '- 写入单元格: {"action":"ss_write","token":"token","range":"Sheet1!A1:C2","values":[["姓名","年龄"],["张三",28]]}\n'
+            '- 追加行: {"action":"ss_append","token":"token","range":"Sheet1!A:C","values":[["新数据1","新数据2"]]}\n\n'
+            "注意：如果用户只是在询问能力，选 inquiry。如果提到多维表格/bitable，用 bt_ 前缀；电子表格/spreadsheet/excel，用 ss_ 前缀。\n\n"
             f"消息: {text}"
         )
         try:
@@ -134,7 +140,11 @@ class DocsMixin:
                     "• 新增记录 — 「往多维表格里加一条：姓名=张三, 年龄=28」\n"
                     "• 更新/删除记录 — 需提供 record_id\n\n"
                     "📊 电子表格 (sheet)\n"
-                    "• 暂不支持直接操作，后续可以加\n\n"
+                    "• 创建表格 — 「创建一个电子表格叫XX」\n"
+                    "• 查看工作表 — 「看看这个表格有哪些sheet <链接>」\n"
+                    "• 读取数据 — 「读一下这个表格A1到C10 <链接>」\n"
+                    "• 写入数据 — 「往表格A1写入...」\n"
+                    "• 追加行 — 「往表格追加一行数据」\n\n"
                     "📁 文件夹\n"
                     "• 列出文件 — 「列一下云文档」或 /doc list\n\n"
                     "你可以直接用自然语言告诉我要做什么，也可以用命令 /doc help 查看完整用法。",
@@ -317,6 +327,90 @@ class DocsMixin:
                     self.sender.send_text(sender_id, f"记录 {record_id} 已删除")
                 else:
                     self.sender.send_text(sender_id, "删除失败")
+
+            # ── Spreadsheet actions ──
+
+            elif action == "ss_create":
+                title = parsed.get("title", "未命名电子表格")
+                result = self.sheets_manager.create_spreadsheet(title)
+                if result:
+                    self.sender.send_text(
+                        sender_id,
+                        f"电子表格已创建:\n名称: {title}\n链接: {result['url']}",
+                    )
+                else:
+                    self.sender.send_text(sender_id, "创建电子表格失败，请检查权限")
+
+            elif action == "ss_sheets":
+                token = parsed.get("token", "")
+                if not token:
+                    self.sender.send_text(sender_id, "请提供电子表格链接或 token")
+                    return
+                sheets = self.sheets_manager.list_sheets(token)
+                if sheets:
+                    lines = [
+                        f"📊 {s['title']} (ID: {s['sheet_id']}, {s['row_count']}行×{s['col_count']}列)"
+                        for s in sheets
+                    ]
+                    self._send_long_text(
+                        sender_id,
+                        f"电子表格包含 {len(sheets)} 个工作表:\n\n" + "\n".join(lines),
+                    )
+                else:
+                    self.sender.send_text(sender_id, "未找到工作表，请检查链接或权限")
+
+            elif action == "ss_read":
+                token = parsed.get("token", "")
+                range_str = parsed.get("range", "")
+                if not token:
+                    self.sender.send_text(sender_id, "请提供电子表格链接或 token")
+                    return
+                # If no range, auto-detect first sheet
+                if not range_str:
+                    sheets = self.sheets_manager.list_sheets(token)
+                    if sheets:
+                        range_str = f"{sheets[0]['sheet_id']}!A1:J20"
+                    else:
+                        self.sender.send_text(sender_id, "无法获取工作表信息")
+                        return
+                values = self.sheets_manager.read_range(token, range_str)
+                if values is not None:
+                    formatted = self.sheets_manager.format_cells(values)
+                    self._send_long_text(sender_id, f"数据 ({range_str}):\n\n{formatted}")
+                else:
+                    self.sender.send_text(sender_id, "读取失败，请检查范围格式和权限")
+
+            elif action == "ss_write":
+                token = parsed.get("token", "")
+                range_str = parsed.get("range", "")
+                values = parsed.get("values", [])
+                if not token or not range_str or not values:
+                    self.sender.send_text(
+                        sender_id,
+                        "写入需要: token, range, values\n"
+                        "例: 「往表格 shtcnXXX 的 Sheet1!A1 写入：姓名, 年龄」",
+                    )
+                    return
+                if self.sheets_manager.write_range(token, range_str, values):
+                    self.sender.send_text(sender_id, f"已写入 {len(values)} 行到 {range_str}")
+                else:
+                    self.sender.send_text(sender_id, "写入失败")
+
+            elif action == "ss_append":
+                token = parsed.get("token", "")
+                range_str = parsed.get("range", "")
+                values = parsed.get("values", [])
+                if not token or not range_str or not values:
+                    self.sender.send_text(
+                        sender_id,
+                        "追加需要: token, range (列范围), values\n"
+                        "例: 「往表格 shtcnXXX 的 Sheet1!A:C 追加一行：张三, 28, 北京」",
+                    )
+                    return
+                if self.sheets_manager.append_rows(token, range_str, values):
+                    self.sender.send_text(sender_id, f"已追加 {len(values)} 行")
+                else:
+                    self.sender.send_text(sender_id, "追加失败")
 
             else:
                 self.sender.send_text(sender_id, "没理解你的文档操作，试试: /doc help")
