@@ -14,6 +14,19 @@ class DocsMixin:
         parts = text.strip().split(None, 2)
         subcmd = parts[1] if len(parts) > 1 else "help"
 
+        if subcmd == "list":
+            folder_token = parts[2].strip() if len(parts) > 2 else ""
+            files = self.doc_manager.list_folder(folder_token)
+            if not files:
+                self.sender.send_text(sender_id, "文件夹为空或无权访问")
+                return
+            type_icons = {"docx": "📄", "sheet": "📊", "bitable": "📋", "folder": "📁"}
+            lines = [f"{type_icons.get(f['type'], '📎')} {f['name']} ({f['type']})" +
+                     (f"\n   {f['url']}" if f['url'] else f"\n   token: {f['token']}")
+                     for f in files]
+            self._send_long_text(sender_id, f"云文档清单 ({len(files)} 个):\n\n" + "\n".join(lines))
+            return
+
         if subcmd == "read" and len(parts) > 2:
             url_or_id = parts[2].strip()
             result = self.doc_manager.read_document(url_or_id)
@@ -69,6 +82,7 @@ class DocsMixin:
         self.sender.send_text(
             sender_id,
             "飞书文档命令:\n"
+            "/doc list [文件夹token] — 列出云文档清单\n"
             "/doc read <链接或ID> — 读取文档内容\n"
             "/doc create <标题> — 创建新文档\n"
             "/doc write <ID或链接> <内容> — 写入内容到文档\n"

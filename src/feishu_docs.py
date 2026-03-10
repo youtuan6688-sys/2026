@@ -24,6 +24,7 @@ from lark_oapi.api.docx.v1 import (
 from lark_oapi.api.drive.v1 import (
     CreatePermissionMemberRequest,
     BaseMember,
+    ListFileRequest,
 )
 
 from config.settings import Settings
@@ -207,6 +208,37 @@ class FeishuDocManager:
 
         logger.info(f"Shared document {doc_id} with {member_id} ({perm})")
         return True
+
+    def list_folder(self, folder_token: str = "",
+                    page_size: int = 50) -> list[dict]:
+        """List files in a folder (or root if no token).
+
+        Returns list of {"name", "type", "token", "url"} dicts.
+        """
+        req = ListFileRequest.builder() \
+            .folder_token(folder_token) \
+            .page_size(page_size) \
+            .build()
+        resp = self.client.drive.v1.file.list(req)
+
+        if not resp.success():
+            logger.error(f"Failed to list folder: code={resp.code}, msg={resp.msg}")
+            return []
+
+        results = []
+        for f in (resp.data.files or []):
+            file_type = f.type or "unknown"
+            token = f.token or ""
+            url = f"https://feishu.cn/{file_type}/{token}" if file_type in ("docx", "sheet", "bitable") else ""
+            results.append({
+                "name": f.name or "(unnamed)",
+                "type": file_type,
+                "token": token,
+                "url": url,
+            })
+
+        logger.info(f"Listed {len(results)} files in folder {folder_token or 'root'}")
+        return results
 
     def _extract_block_text(self, block) -> str:
         """Extract text content from a document block."""
