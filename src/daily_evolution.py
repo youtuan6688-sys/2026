@@ -263,12 +263,12 @@ def _append_to_memory(filename: str, text: str):
 
 def _notify_group(target_date: date, persona_result: str,
                    contact_results: dict, knowledge_result: str):
-    """Send evolution summary to group chat."""
+    """Send evolution summary to admin (private chat only, not to groups)."""
     try:
         from config.settings import settings as app_settings
         from src.feishu_sender import FeishuSender
 
-        GROUP_CHAT_ID = "oc_4f17f731a0a3bf9489c095c26be6dedc"
+        ADMIN_ID = "ou_4a18a2e35a5b04262a24f41731046d15"
         sections = [f"🧬 每日进化报告 [{target_date}]"]
 
         # Persona
@@ -287,10 +287,10 @@ def _notify_group(target_date: date, persona_result: str,
         # Only send if there's actual content beyond the header
         if len(sections) > 1:
             sender = FeishuSender(app_settings)
-            sender.send_text(GROUP_CHAT_ID, "\n".join(sections))
-            logger.info("Evolution summary sent to group chat")
+            sender.send_text(ADMIN_ID, "\n".join(sections))
+            logger.info("Evolution summary sent to admin")
         else:
-            logger.info("No evolution updates to report to group")
+            logger.info("No evolution updates to report")
     except Exception as e:
         logger.warning(f"Failed to send evolution summary to group: {e}")
 
