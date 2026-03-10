@@ -127,13 +127,18 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
     # ── RAG: Knowledge Base Query ──
 
     _SKIP_RAG_PATTERNS = re.compile(
-        r"^(你好|hi|hello|ok|好的|嗯|哈哈|谢谢|666|牛|👍|😂|行|收到|了解|明白)$",
+        r"^(你好|hi|hello|ok|好的|嗯嗯?|哈哈+|谢谢|感谢|666+|牛|👍|😂|😄|🤣|"
+        r"行|收到|了解|明白|是的|对的|可以|没问题|好嘞|好哒|"
+        r"好的[，,]?谢谢[！!]?|谢谢[啦了哈]?[！!]?|辛苦了?|"
+        r"哈哈哈+|笑死|太强了|厉害|6+|赞|对|嘿|哦|噢|啊|呵呵"
+        r")[！!。.～~]?$",
         re.IGNORECASE,
     )
 
-    def _query_knowledge_base(self, text: str) -> str:
+    def _query_knowledge_base(self, text: str, chat_type: str = "p2p") -> str:
         """Query vector store for relevant articles to inject as context."""
-        if len(text) < 6 or self._SKIP_RAG_PATTERNS.match(text.strip()):
+        min_len = 10 if chat_type == "group" else 6
+        if len(text) < min_len or self._SKIP_RAG_PATTERNS.match(text.strip()):
             return ""
         try:
             results = self.vector_store.query_similar(text, top_k=3)

@@ -29,31 +29,49 @@ def _load_seen_cache():
         logger.warning(f"Failed to load dedup cache: {e}")
 
 
+_seen_dirty = False
+
+
 def _save_seen_cache():
     """Persist dedup cache to disk."""
+    global _seen_dirty
     try:
         _SEEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         _SEEN_FILE.write_text(
             json.dumps(list(_seen_messages.keys()), ensure_ascii=False),
             encoding="utf-8",
         )
+        _seen_dirty = False
     except Exception as e:
         logger.warning(f"Failed to save dedup cache: {e}")
 
 
+def _flush_seen_cache():
+    """Background timer: flush dedup cache every 10 seconds if dirty."""
+    global _seen_dirty
+    if _seen_dirty:
+        _save_seen_cache()
+    # Re-schedule
+    t = threading.Timer(10.0, _flush_seen_cache)
+    t.daemon = True
+    t.start()
+
+
 def _is_duplicate(message_id: str) -> bool:
     """Check if we've already processed this message ID."""
+    global _seen_dirty
     if message_id in _seen_messages:
         return True
     _seen_messages[message_id] = True
     if len(_seen_messages) > _SEEN_MAX:
         _seen_messages.popitem(last=False)
-    _save_seen_cache()
+    _seen_dirty = True
     return False
 
 
-# Load cache on module import
+# Load cache on module import and start background flush timer
 _load_seen_cache()
+_flush_seen_cache()
 
 
 def start_listener(settings, message_handler_callback, feishu_sender=None):

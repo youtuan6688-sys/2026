@@ -65,7 +65,7 @@ class ClaudeMixin:
 
                 parts.append(f"用户消息:\n{prompt}")
 
-                kb_context = self._query_knowledge_base(prompt)
+                kb_context = self._query_knowledge_base(prompt, chat_type="group")
                 if kb_context:
                     parts.append(kb_context)
 

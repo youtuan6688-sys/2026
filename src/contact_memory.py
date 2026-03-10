@@ -7,6 +7,7 @@ The bot loads this before responding, making conversations personal and alive.
 import json
 import logging
 import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 
@@ -32,6 +33,9 @@ class ContactMemory:
             .build()
         # Cache to avoid repeated API calls within a session
         self._name_cache: dict[str, str] = {}
+        # In-memory profile cache: {open_id: (profile_dict, timestamp)}
+        self._profile_cache: dict[str, tuple[dict, float]] = {}
+        self._cache_ttl = 60  # seconds
         # Per-user locks to prevent concurrent writes to the same file
         self._locks: dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
@@ -46,11 +50,20 @@ class ContactMemory:
         return CONTACTS_DIR / f"{open_id}.json"
 
     def load(self, open_id: str) -> dict:
-        """Load a contact's profile. Creates one if new."""
+        """Load a contact's profile. Uses in-memory cache (TTL-based)."""
+        # Check cache first
+        cached = self._profile_cache.get(open_id)
+        if cached:
+            profile, ts = cached
+            if time.monotonic() - ts < self._cache_ttl:
+                return profile
+
         path = self._profile_path(open_id)
         if path.exists():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                profile = json.loads(path.read_text(encoding="utf-8"))
+                self._profile_cache[open_id] = (profile, time.monotonic())
+                return profile
             except Exception:
                 pass
 
@@ -74,7 +87,7 @@ class ContactMemory:
         return profile
 
     def save(self, open_id: str, profile: dict):
-        """Save a contact's profile (thread-safe)."""
+        """Save a contact's profile (thread-safe). Updates cache."""
         lock = self._get_lock(open_id)
         with lock:
             path = self._profile_path(open_id)
@@ -82,6 +95,7 @@ class ContactMemory:
                 json.dumps(profile, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+        self._profile_cache[open_id] = (profile, time.monotonic())
 
     def touch(self, open_id: str):
         """Update last_seen and message_count. Auto-fetch name if missing."""
