@@ -11,6 +11,7 @@ Triggered by cron at 23:00 Beijing time (7:00 PST).
 import json
 import logging
 import os
+import re
 import subprocess
 from datetime import date, timedelta
 from pathlib import Path
@@ -132,7 +133,102 @@ def evolve_persona(entries: list[dict]) -> str:
     with open(GROUP_PERSONA_FILE, "a", encoding="utf-8") as f:
         f.write(f"\n\n## 每日进化 [{today}]\n{output}")
     logger.info(f"Persona evolved with {len(output)} chars")
+
+    # Compress old entries to keep file small
+    try:
+        compress_persona()
+    except Exception as e:
+        logger.warning(f"Persona compression failed (non-fatal): {e}")
+
     return output
+
+
+def _call_sonnet(prompt: str, timeout: int = 60) -> str:
+    """Call Claude sonnet for lighter tasks (compression, summarization)."""
+    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+    env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+    result = subprocess.run(
+        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+        capture_output=True, text=True, timeout=timeout, env=env,
+    )
+    return result.stdout.strip()
+
+
+_EVOLUTION_HEADER_RE = re.compile(r"^## 每日进化 \[(\d{4}-\d{2}-\d{2})\]", re.MULTILINE)
+_MAX_RECENT_DAYS = 7
+
+
+def compress_persona():
+    """Keep only recent evolution entries; compress older ones into a summary.
+
+    Uses sonnet (not opus) since this is a summarization task.
+    """
+    if not GROUP_PERSONA_FILE.exists():
+        return
+
+    content = GROUP_PERSONA_FILE.read_text(encoding="utf-8")
+
+    # Find all evolution entry positions
+    matches = list(_EVOLUTION_HEADER_RE.finditer(content))
+    if len(matches) <= _MAX_RECENT_DAYS:
+        return  # Nothing to compress
+
+    # Split: entries to compress (old) vs keep (recent)
+    cutoff_idx = len(matches) - _MAX_RECENT_DAYS
+    old_start = matches[0].start()
+    keep_start = matches[cutoff_idx].start()
+
+    base_content = content[:old_start].rstrip()
+    old_entries = content[old_start:keep_start].strip()
+    recent_entries = content[keep_start:].strip()
+
+    if not old_entries:
+        return
+
+    # Check if there's already a compressed section
+    compressed_marker = "## 综合记忆"
+    existing_compressed = ""
+    if compressed_marker in base_content:
+        parts = base_content.split(compressed_marker, 1)
+        base_before = parts[0].rstrip()
+        # Extract existing compressed content (everything between 综合记忆 and next ##)
+        rest = parts[1]
+        next_section = rest.find("\n## ")
+        if next_section > 0:
+            existing_compressed = rest[:next_section].strip()
+            base_content = base_before + "\n\n" + rest[next_section:]
+        else:
+            existing_compressed = rest.strip()
+            base_content = base_before
+
+    # Use sonnet to compress old entries
+    compress_prompt = (
+        "你是小叼毛的记忆压缩模块。将以下旧的每日进化记录压缩成精华要点。\n\n"
+        "要求：\n"
+        "- 保留有价值的群友画像、常用梗、核心需求\n"
+        "- 合并重复信息\n"
+        "- 输出 5-10 条精华（每条一行，前面加 -）\n"
+        "- 不要日期前缀，只保留内容本身\n\n"
+    )
+    if existing_compressed:
+        compress_prompt += f"已有的综合记忆（需要合并）：\n{existing_compressed}\n\n"
+    compress_prompt += f"需要压缩的旧记录：\n{old_entries}"
+
+    compressed = _call_sonnet(compress_prompt, timeout=60)
+    if not compressed or len(compressed) < 20:
+        logger.warning("Persona compression returned empty result, skipping")
+        return
+
+    # Rebuild file: base + compressed + recent
+    new_content = (
+        f"{base_content}\n\n"
+        f"## 综合记忆\n{compressed}\n\n"
+        f"{recent_entries}\n"
+    )
+
+    GROUP_PERSONA_FILE.write_text(new_content, encoding="utf-8")
+    old_count = cutoff_idx
+    logger.info(f"Persona compressed: {old_count} old entries merged, {_MAX_RECENT_DAYS} recent kept")
 
 
 def evolve_contacts(entries: list[dict]) -> dict[str, str]:
@@ -261,7 +357,143 @@ def _append_to_memory(filename: str, text: str):
         f.write(f"\n{text}")
 
 
-def _notify_group(target_date: date, persona_result: str,
+DAILY_SUMMARY_FILE = MEMORY_DIR / "daily_summary.md"
+METRICS_FILE = Path("/Users/tuanyou/Happycode2026/data/evolution_metrics.json")
+_MAX_SUMMARY_DAYS = 7
+
+# Positive signals in user messages (after bot reply)
+_POSITIVE_SIGNALS = {"谢谢", "感谢", "牛", "厉害", "好的", "收到", "可以", "不错", "666", "赞", "nice", "perfect", "thanks", "👍"}
+_NEGATIVE_SIGNALS = {"不对", "错了", "什么意思", "没用", "重来", "不是这个", "废话", "答非所问"}
+
+
+def track_metrics(target_date: date, entries: list[dict],
+                  persona_updated: bool, contacts_updated: int,
+                  knowledge_extracted: bool):
+    """Track lightweight evolution metrics per day."""
+    # Count stats
+    unique_users = set()
+    group_msgs = 0
+    p2p_msgs = 0
+    positive = 0
+    negative = 0
+
+    for e in entries:
+        uid = e.get("user_id", "")
+        if uid:
+            unique_users.add(uid)
+        if e.get("chat_type") == "group":
+            group_msgs += 1
+        else:
+            p2p_msgs += 1
+
+        # Check user message for satisfaction signals
+        msg = e.get("user_msg", "").lower()
+        if any(s in msg for s in _POSITIVE_SIGNALS):
+            positive += 1
+        if any(s in msg for s in _NEGATIVE_SIGNALS):
+            negative += 1
+
+    day_metrics = {
+        "date": target_date.isoformat(),
+        "total_messages": len(entries),
+        "group_messages": group_msgs,
+        "p2p_messages": p2p_msgs,
+        "unique_users": len(unique_users),
+        "positive_signals": positive,
+        "negative_signals": negative,
+        "persona_updated": persona_updated,
+        "contacts_updated": contacts_updated,
+        "knowledge_extracted": knowledge_extracted,
+    }
+
+    # Load existing metrics
+    all_metrics = []
+    if METRICS_FILE.exists():
+        try:
+            all_metrics = json.loads(METRICS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            all_metrics = []
+
+    # Remove existing entry for same date (idempotent)
+    all_metrics = [m for m in all_metrics if m.get("date") != target_date.isoformat()]
+    all_metrics.append(day_metrics)
+
+    # Keep last 90 days
+    all_metrics = sorted(all_metrics, key=lambda m: m.get("date", ""))[-90:]
+
+    METRICS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    METRICS_FILE.write_text(json.dumps(all_metrics, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"Metrics tracked for {target_date}: {len(entries)} msgs, {len(unique_users)} users, +{positive}/-{negative}")
+
+
+def _write_daily_summary(target_date: date, entries: list[dict],
+                          persona_result: str, contact_results: dict):
+    """Write a concise cross-day summary for context continuity.
+
+    Keeps last 7 days, no AI call needed — just structured extraction.
+    """
+    group_count = sum(1 for e in entries if e.get("chat_type") == "group")
+    p2p_count = sum(1 for e in entries if e.get("chat_type") == "p2p")
+
+    # Extract active users
+    users = {}
+    for e in entries:
+        uid = e.get("user_id", "")
+        name = e.get("user_name", "")
+        if uid:
+            users[uid] = name
+
+    # Extract main topics from user messages (first 100 chars of each)
+    topics = set()
+    for e in entries[:30]:
+        msg = e.get("user_msg", "")[:50]
+        if len(msg) > 10:
+            topics.add(msg)
+
+    user_list = ", ".join(n or uid[:8] for uid, n in users.items()) or "无"
+    topic_sample = "; ".join(list(topics)[:5]) or "无"
+
+    today_summary = (
+        f"### {target_date}\n"
+        f"- 群聊 {group_count} 条, 私聊 {p2p_count} 条\n"
+        f"- 活跃用户: {user_list}\n"
+        f"- 话题: {topic_sample}\n"
+    )
+
+    if persona_result and "No notable" not in persona_result and "No group" not in persona_result:
+        # Take first line of persona result as key insight
+        first_line = persona_result.strip().split("\n")[0]
+        today_summary += f"- 进化要点: {first_line}\n"
+
+    # Load existing summary, append today, keep last N days
+    existing = ""
+    if DAILY_SUMMARY_FILE.exists():
+        existing = DAILY_SUMMARY_FILE.read_text(encoding="utf-8")
+
+    # Parse existing days
+    day_sections = []
+    current_section = []
+    for line in existing.split("\n"):
+        if line.startswith("### ") and current_section:
+            day_sections.append("\n".join(current_section))
+            current_section = [line]
+        else:
+            current_section.append(line)
+    if current_section and any(l.strip() for l in current_section):
+        day_sections.append("\n".join(current_section))
+
+    # Add today and keep last N
+    day_sections.append(today_summary)
+    day_sections = day_sections[-_MAX_SUMMARY_DAYS:]
+
+    DAILY_SUMMARY_FILE.write_text(
+        "\n".join(day_sections).strip() + "\n",
+        encoding="utf-8",
+    )
+    logger.info(f"Daily summary written for {target_date}")
+
+
+def _notify_admin(target_date: date, persona_result: str,
                    contact_results: dict, knowledge_result: str):
     """Send evolution summary to admin (private chat only, not to groups)."""
     try:
@@ -293,6 +525,87 @@ def _notify_group(target_date: date, persona_result: str,
             logger.info("No evolution updates to report")
     except Exception as e:
         logger.warning(f"Failed to send evolution summary to group: {e}")
+
+
+VAULT_LOGS_DIR = Path("/Users/tuanyou/Happycode2026/vault/logs")
+
+
+def _save_evolution_to_vault(target_date: date, entries: list[dict],
+                              persona_result: str, contact_results: dict):
+    """Save evolution analysis to Obsidian vault for content creation.
+
+    Creates a structured markdown file with frontmatter, searchable in Obsidian.
+    Useful as素材 for 公众号/小红书 (Bot 成长日记、AI 产品案例).
+    """
+    VAULT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    today = target_date.isoformat()
+    log_file = VAULT_LOGS_DIR / f"evolution-{today}.md"
+
+    # Metrics section
+    metrics_section = "无数据"
+    if METRICS_FILE.exists():
+        try:
+            all_metrics = json.loads(METRICS_FILE.read_text(encoding="utf-8"))
+            today_m = next((m for m in all_metrics if m.get("date") == today), None)
+            if today_m:
+                metrics_section = (
+                    f"- 总消息: {today_m.get('total_messages', 0)}\n"
+                    f"- 群聊: {today_m.get('group_messages', 0)}, 私聊: {today_m.get('p2p_messages', 0)}\n"
+                    f"- 活跃用户: {today_m.get('unique_users', 0)}\n"
+                    f"- 正面信号: {today_m.get('positive_signals', 0)}, 负面: {today_m.get('negative_signals', 0)}"
+                )
+        except Exception:
+            pass
+
+    # Active users
+    users = {}
+    for e in entries:
+        uid = e.get("user_id", "")
+        name = e.get("user_name", "")
+        if uid:
+            users[uid] = name
+    user_list = ", ".join(n or uid[:8] for uid, n in users.items()) or "无"
+
+    # Contact updates
+    contact_lines = ""
+    if contact_results:
+        lines = [f"- {name}: {result[:150]}" for name, result in list(contact_results.items())[:10]]
+        contact_lines = "\n".join(lines)
+
+    content = f"""---
+title: "进化日志 {today}"
+source: "daily-evolution"
+platform: evolution
+date_saved: {today}
+tags:
+  - 进化日志
+  - Bot成长
+  - 用户洞察
+  - 内容素材
+category: evolution
+content_use:
+  - Bot成长复盘
+  - 用户行为分析素材
+  - AI产品案例素材
+---
+
+# 进化日志 {today}
+
+## 今日概况
+- 活跃用户: {user_list}
+- 消息总量: {len(entries)}
+
+## 人设进化
+{persona_result or '无更新'}
+
+## 联系人更新
+{contact_lines or '无更新'}
+
+## 数据指标
+{metrics_section}
+"""
+    log_file.write_text(content, encoding="utf-8")
+    logger.info(f"Evolution log saved to vault: {log_file}")
 
 
 def run_daily_evolution(target_date: date = None):
@@ -344,8 +657,31 @@ def run_daily_evolution(target_date: date = None):
         failures += 1
         logger.error(f"Knowledge extraction failed: {e}", exc_info=True)
 
-    # Notify group chat with evolution results
-    _notify_group(target_date, persona_result, contact_results, knowledge_result)
+    # Track evolution metrics
+    try:
+        track_metrics(
+            target_date, entries,
+            persona_updated=bool(persona_result and "No notable" not in persona_result),
+            contacts_updated=len(contact_results),
+            knowledge_extracted=bool(knowledge_result and "No notable" not in knowledge_result),
+        )
+    except Exception as e:
+        logger.warning(f"Metrics tracking failed (non-fatal): {e}")
+
+    # Generate cross-day summary
+    try:
+        _write_daily_summary(target_date, entries, persona_result, contact_results)
+    except Exception as e:
+        logger.warning(f"Daily summary generation failed (non-fatal): {e}")
+
+    # Save evolution log to Obsidian vault
+    try:
+        _save_evolution_to_vault(target_date, entries, persona_result, contact_results)
+    except Exception as e:
+        logger.warning(f"Failed to save evolution to vault (non-fatal): {e}")
+
+    # Notify admin with evolution results
+    _notify_admin(target_date, persona_result, contact_results, knowledge_result)
 
     # Only archive buffer if all tasks succeeded; keep for retry otherwise
     if failures == 0:
