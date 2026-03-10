@@ -43,6 +43,18 @@ class ClaudeMixin:
                 # 用户消息 + 上下文 → user prompt
                 parts = []
 
+                # Group long-term memory (summaries, topics, key info)
+                try:
+                    if not hasattr(self, '_group_memory'):
+                        from src.group_memory import GroupMemory
+                        self._group_memory = GroupMemory()
+                    group_ctx = self._group_memory.format_context(sender_id)
+                    if group_ctx:
+                        parts.append(group_ctx)
+                    self._group_memory.increment_stats(sender_id)
+                except Exception as e:
+                    logger.warning(f"Group memory load failed: {e}")
+
                 history_text = self._format_history(chat_id=sender_id)
                 if history_text:
                     parts.append(history_text)

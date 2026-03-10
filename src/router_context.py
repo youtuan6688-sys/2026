@@ -31,9 +31,9 @@ class ContextMixin:
                 data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     for cid, turns in data.items():
-                        self._histories[cid] = deque(turns[-15:], maxlen=15)
+                        self._histories[cid] = deque(turns[-20:], maxlen=20)
                 elif isinstance(data, list):
-                    self._histories["default"] = deque(data[-15:], maxlen=15)
+                    self._histories["default"] = deque(data[-20:], maxlen=20)
         except Exception:
             pass
 
@@ -54,11 +54,18 @@ class ContextMixin:
     def _get_history(self, chat_id: str) -> deque:
         """Get or create history for a specific chat."""
         if chat_id not in self._histories:
-            self._histories[chat_id] = deque(maxlen=15)
+            self._histories[chat_id] = deque(maxlen=20)
         return self._histories[chat_id]
 
     def _add_turn(self, role: str, text: str, chat_id: str = "default",
                   user_name: str = ""):
+        # Noise filter: skip low-info messages for group chats
+        if chat_id.startswith("oc_") and role == "user":
+            from src.group_memory import is_noise
+            if is_noise(text):
+                logger.debug(f"Filtered noise message in {chat_id}: {text[:20]}")
+                return
+
         history = self._get_history(chat_id)
         entry = {
             "role": role,
@@ -68,7 +75,36 @@ class ContextMixin:
         if user_name and role == "user":
             entry["user"] = user_name
         history.append(entry)
+
+        # Trigger Observer: every 10 meaningful turns, extract observations
+        if chat_id.startswith("oc_"):
+            self._maybe_observe(chat_id, history)
+
         self._save_histories()
+
+    def _maybe_observe(self, chat_id: str, history: deque):
+        """Trigger Observer agent when enough turns accumulated."""
+        try:
+            if not hasattr(self, '_group_memory'):
+                from src.group_memory import GroupMemory
+                self._group_memory = GroupMemory()
+
+            self._group_memory.track_turn(chat_id)
+
+            if self._group_memory.should_observe(chat_id):
+                import threading
+                turns = list(history)
+                # Run Observer in background to not block response
+                t = threading.Thread(
+                    target=self._group_memory.run_observer,
+                    args=(chat_id, turns),
+                    daemon=True,
+                )
+                t.start()
+                self._group_memory.reset_pending(chat_id)
+                logger.info(f"Observer triggered for {chat_id} ({len(turns)} turns)")
+        except Exception as e:
+            logger.warning(f"Observer trigger failed: {e}")
 
     def _format_history(self, chat_id: str = "default") -> str:
         history = self._get_history(chat_id)
