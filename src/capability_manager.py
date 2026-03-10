@@ -10,10 +10,10 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 INSTALL_LOG = Path("/Users/tuanyou/Happycode2026/data/install_history.json")
 SKILLS_DIR = Path("/Users/tuanyou/.claude/commands")
 MCP_CONFIG = Path("/Users/tuanyou/.claude.json")
@@ -170,8 +170,7 @@ def test_capability(name: str, test_prompt: str) -> bool:
         True if test passed
     """
     try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+        env = safe_env()
         result = subprocess.run(
             [CLAUDE_PATH, "-p", test_prompt, "--model", "haiku"],
             capture_output=True, text=True, timeout=30, env=env,

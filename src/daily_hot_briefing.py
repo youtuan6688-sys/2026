@@ -16,17 +16,13 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from config.settings import settings
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
 BUFFER_DIR = Path("/Users/tuanyou/Happycode2026/data/daily_buffer")
 REPORT_DIR = Path("/Users/tuanyou/Happycode2026/data/hot_briefings")
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
-
-GROUP_CHATS = [
-    "oc_4f17f731a0a3bf9489c095c26be6dedc",
-    "oc_d7120356187aed1e651863428e55ab47",
-]
+GROUP_CHATS = settings.group_chat_ids
 
 
 def _load_group_entries(target_date: date) -> list[dict]:
@@ -82,8 +78,7 @@ def _extract_topics(entries: list[dict]) -> list[str]:
     )
 
     try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+        env = safe_env()
         result = subprocess.run(
             [CLAUDE_PATH, "-p", prompt, "--model", "haiku"],
             capture_output=True, text=True, timeout=30, env=env,
@@ -129,8 +124,7 @@ def _search_and_compile(topics: list[str], target_date: date) -> str:
     )
 
     try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+        env = safe_env()
         result = subprocess.run(
             [CLAUDE_PATH, "-p", prompt,
              "--allowedTools", "WebSearch,WebFetch"],

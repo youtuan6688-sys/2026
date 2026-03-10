@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from queue import Queue, Empty
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,7 @@ class Brain:
                 return True
 
             system_prompt = _build_system_prompt()
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-            env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+            env = safe_env()
 
             cmd = [
                 CLAUDE_BIN,

@@ -8,13 +8,13 @@ import subprocess
 from collections import deque
 from datetime import date, datetime
 from pathlib import Path
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
 HISTORY_FILE = Path("/Users/tuanyou/Happycode2026/data/chat_history.json")
 TODO_FILE = Path("/Users/tuanyou/Happycode2026/data/todos.json")
 PHASE_LOG_FILE = Path("/Users/tuanyou/Happycode2026/data/phase_log.json")
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 MEMORY_DIR = Path("/Users/tuanyou/Happycode2026/vault/memory")
 GROUP_PERSONA_FILE = Path("/Users/tuanyou/Happycode2026/team/roles/group_persona/memory.md")
 
@@ -214,7 +214,7 @@ class ContextMixin:
             "只输出总结，不要额外解释。"
         )
         try:
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            env = safe_env()
             result = subprocess.run(
                 [CLAUDE_PATH, "-p", prompt],
                 capture_output=True, text=True, timeout=60, env=env,

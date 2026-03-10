@@ -16,9 +16,10 @@ import subprocess
 from datetime import date, timedelta
 from pathlib import Path
 
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
+
 logger = logging.getLogger(__name__)
 
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 BUFFER_DIR = Path("/Users/tuanyou/Happycode2026/data/daily_buffer")
 GROUP_PERSONA_FILE = Path("/Users/tuanyou/Happycode2026/team/roles/group_persona/memory.md")
 CONTACTS_DIR = Path("/Users/tuanyou/Happycode2026/vault/memory/contacts")
@@ -45,8 +46,7 @@ def _call_opus(prompt: str, timeout: int = 120) -> str:
 
     Raises OpusCallError if the output looks like a rate-limit or error message.
     """
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+    env = safe_env()
     result = subprocess.run(
         [CLAUDE_PATH, "-p", prompt, "--model", "opus"],
         capture_output=True, text=True, timeout=timeout, env=env,
@@ -145,8 +145,7 @@ def evolve_persona(entries: list[dict]) -> str:
 
 def _call_sonnet(prompt: str, timeout: int = 60) -> str:
     """Call Claude sonnet for lighter tasks (compression, summarization)."""
-    env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-    env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+    env = safe_env()
     result = subprocess.run(
         [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
         capture_output=True, text=True, timeout=timeout, env=env,

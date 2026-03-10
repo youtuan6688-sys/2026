@@ -18,13 +18,13 @@ from pathlib import Path
 
 from config.settings import settings
 from src.feishu_sender import FeishuSender
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
 PROJECT_DIR = Path("/Users/tuanyou/Happycode2026")
 TASKS_FILE = PROJECT_DIR / "data" / "scheduled_tasks.json"
 PENDING_FILE = PROJECT_DIR / "data" / "pending_task_requests.json"
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 
 ADMIN_OPEN_ID = "ou_4a18a2e35a5b04262a24f41731046d15"
 GROUP_CHAT_ID = "oc_4f17f731a0a3bf9489c095c26be6dedc"

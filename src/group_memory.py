@@ -17,11 +17,11 @@ import subprocess
 import threading
 from datetime import date, datetime
 from pathlib import Path
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
 GROUPS_DIR = Path("/Users/tuanyou/Happycode2026/vault/memory/groups")
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 
 MAX_OBSERVATIONS = 50   # max observation notes per group
 MAX_TOPICS = 30
@@ -234,8 +234,7 @@ class GroupMemory:
         )
 
         try:
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-            env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+            env = safe_env()
             result = subprocess.run(
                 [CLAUDE_PATH, "-p", prompt, "--model", "haiku"],
                 capture_output=True, text=True, timeout=30, env=env,

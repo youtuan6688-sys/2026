@@ -31,7 +31,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_content_length: int = 50000
 
+    # Group chat IDs for daily reports / briefings
+    group_chat_ids: list[str] = [
+        "oc_4f17f731a0a3bf9489c095c26be6dedc",
+        "oc_d7120356187aed1e651863428e55ab47",
+    ]
+
     model_config = {"env_file": str(PROJECT_ROOT / ".env"), "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
+
+# Shared constants
+CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"

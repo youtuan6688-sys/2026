@@ -6,10 +6,10 @@ import subprocess
 from config.prompts import ANALYSIS_PROMPT, RELATION_PROMPT
 from config.settings import Settings
 from src.models.content import ParsedContent, AnalyzedContent
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 
 ANALYSIS_SCHEMA = json.dumps({
     "type": "object",
@@ -71,7 +71,7 @@ class AIAnalyzer:
         and returns the parsed structured_output directly.
         Otherwise returns raw text output.
         """
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        env = safe_env()
         cmd = [
             CLAUDE_PATH, "-p", prompt,
             "--model", "sonnet",

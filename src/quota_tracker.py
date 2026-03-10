@@ -18,10 +18,10 @@ from pathlib import Path
 import httpx
 
 from config.settings import settings
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
 QUOTA_FILE = Path("/Users/tuanyou/Happycode2026/data/quota_state.json")
 DEGRADE_THRESHOLD = 0.80  # Switch to backup at 80% of learned limit
 
@@ -217,8 +217,7 @@ class QuotaTracker:
                                timeout: int, cwd: str,
                                extra_args: list | None) -> tuple[str, bool]:
         """Execute Claude CLI subprocess. Returns (output, is_rate_limited)."""
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+        env = safe_env()
 
         cmd = [CLAUDE_PATH, "-p", prompt, "--model", model]
         if extra_args:

@@ -20,18 +20,13 @@ from pathlib import Path
 import httpx
 
 from config.settings import settings
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
 BUFFER_DIR = Path("/Users/tuanyou/Happycode2026/data/daily_buffer")
 REPORT_DIR = Path("/Users/tuanyou/Happycode2026/data/group_reports")
-CLAUDE_PATH = "/Users/tuanyou/.local/bin/claude"
-
-# Group chat IDs to send daily report to
-GROUP_CHATS = [
-    "oc_4f17f731a0a3bf9489c095c26be6dedc",
-    "oc_d7120356187aed1e651863428e55ab47",
-]
+GROUP_CHATS = settings.group_chat_ids
 
 # Daily rotating writing styles
 STYLES = [
@@ -210,8 +205,7 @@ def _extract_highlights(entries: list[dict]) -> dict:
     )
 
     try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
+        env = safe_env()
         result = subprocess.run(
             [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
             capture_output=True, text=True, timeout=60, env=env,

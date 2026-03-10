@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from src.task_queue import TaskQueue
+from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +275,7 @@ class CommandsMixin:
     def _show_health(self, sender_id: str):
         """Run health check and show results."""
         try:
-            env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+            env = safe_env()
             result = subprocess.run(
                 ["/Users/tuanyou/Happycode2026/.venv/bin/python",
                  "/Users/tuanyou/Happycode2026/scripts/health_check.py"],
