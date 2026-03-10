@@ -174,16 +174,17 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
                 logger.info(f"Received share message, skipping: {msg_type}")
 
             else:
-                # For other types (image, file, etc.), try to get any text
-                text = content.get("text", "")
-                if text:
-                    threading.Thread(
-                        target=_dispatch,
-                        args=(reply_id, text, msg, chat_type, sender_id),
-                        daemon=True,
-                    ).start()
-                else:
-                    logger.info(f"Received unsupported message type: {msg_type}")
+                # For other types (image, file, etc.), extract metadata
+                file_name = content.get("file_name", content.get("image_key", ""))
+                file_key = content.get("file_key", content.get("image_key", ""))
+                message_id = msg.message_id or ""
+                marker = f"[file_msg:{msg_type}:{file_name}:{file_key}:{message_id}]"
+                logger.info(f"Received file message: type={msg_type}, name={file_name}, key={file_key}, mid={message_id}")
+                threading.Thread(
+                    target=_dispatch,
+                    args=(reply_id, marker, msg, chat_type, sender_id),
+                    daemon=True,
+                ).start()
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)

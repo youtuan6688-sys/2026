@@ -25,6 +25,7 @@ from src.concurrency import MessageGate
 from src.quota_tracker import QuotaTracker
 from src import tmux_manager
 from src import task_scheduler
+from src import file_handler
 
 logger = logging.getLogger(__name__)
 
@@ -403,6 +404,11 @@ class MessageRouter:
         """
         stripped = text.strip()
         if not stripped:
+            return
+
+        # ── File message handling ──
+        if stripped.startswith("[file_msg:"):
+            self._handle_file_message(sender_id, stripped, chat_type, sender_open_id)
             return
 
         # Resolve the actual user's open_id
@@ -1384,6 +1390,127 @@ class MessageRouter:
         if GROUP_PERSONA_FILE.exists():
             return GROUP_PERSONA_FILE.read_text(encoding="utf-8")
         return "你是小叼毛，一个嘴贱但靠谱的 AI 助手。雅痞风格，喜欢开玩笑但干活从不含糊。"
+
+    # ── File message handling ──
+
+    _FILE_LOG = Path("/Users/tuanyou/Happycode2026/data/file_requests.json")
+
+    def _handle_file_message(self, sender_id: str, marker: str,
+                              chat_type: str, sender_open_id: str):
+        """Handle file messages: analyze supported types, log unsupported ones."""
+        # Parse marker: [file_msg:type:name:key:message_id]
+        parts = marker.strip("[]").split(":", 4)
+        msg_type = parts[1] if len(parts) > 1 else "unknown"
+        file_name = parts[2] if len(parts) > 2 else ""
+        file_key = parts[3] if len(parts) > 3 else ""
+        message_id = parts[4] if len(parts) > 4 else ""
+
+        user_id = sender_open_id or sender_id
+
+        # Log all file requests
+        self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
+
+        # Check if file type is supported
+        if file_name and file_handler.is_supported(file_name):
+            self._analyze_file(sender_id, msg_type, file_name, file_key, message_id, chat_type)
+        else:
+            # Unsupported file type — notify user
+            type_labels = {"file": "文件", "image": "图片", "audio": "语音", "video": "视频", "media": "媒体"}
+            label = type_labels.get(msg_type, msg_type)
+            name_hint = f"「{file_name}」" if file_name else ""
+            self.sender.send_text(
+                sender_id,
+                f"收到你的{label}{name_hint}，但暂时不支持这个格式 🫠\n\n"
+                f"目前支持：Excel (.xlsx/.xls)、CSV、PDF、图片 (png/jpg/gif)\n"
+                f"已记录你的需求，后续会支持更多格式 ✅",
+            )
+
+    def _log_file_request(self, user_id: str, sender_id: str, chat_type: str,
+                           msg_type: str, file_name: str, file_key: str):
+        """Append file request to log for tracking."""
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "user_id": user_id,
+            "chat_type": chat_type,
+            "sender_id": sender_id,
+            "msg_type": msg_type,
+            "file_name": file_name,
+            "file_key": file_key,
+        }
+        try:
+            log_file = self._FILE_LOG
+            existing = json.loads(log_file.read_text(encoding="utf-8")) if log_file.exists() else []
+            existing.append(record)
+            if len(existing) > 500:
+                existing = existing[-500:]
+            log_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Failed to log file request: {e}", exc_info=True)
+
+    def _analyze_file(self, sender_id: str, msg_type: str, file_name: str,
+                       file_key: str, message_id: str, chat_type: str):
+        """Download, parse, and analyze a supported file."""
+        category = file_handler.get_file_category(file_name)
+        is_group = chat_type == "group"
+
+        # Send "processing" indicator
+        self.sender.send_text(sender_id, f"收到「{file_name}」，正在分析... ⏳")
+
+        # Download file from Feishu
+        feishu_client = self.doc_manager.client
+        resource_type = "image" if msg_type == "image" else "file"
+        file_path = file_handler.download_file(
+            feishu_client, message_id, file_key, file_name, resource_type,
+        )
+
+        if not file_path:
+            self.sender.send_text(sender_id, f"下载「{file_name}」失败，请稍后重试 😵")
+            return
+
+        try:
+            # Parse file content
+            content_text, _ = file_handler.parse_file(
+                file_path, file_name,
+                gemini_api_key=settings.gemini_api_key,
+            )
+
+            if category == "image":
+                # Image: Gemini already analyzed, send result directly
+                reply = f"📷 图片分析结果：\n\n{content_text}"
+                self.sender.send_text(sender_id, reply)
+            else:
+                # Excel/CSV: pass content to Claude for analysis
+                prompt = (
+                    f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
+                    f"{content_text}\n\n"
+                    f"请分析这个数据：\n"
+                    f"1. 概述数据内容和结构\n"
+                    f"2. 找出关键数据点和趋势\n"
+                    f"3. 给出有价值的洞察\n"
+                    f"回复要简洁实用，用中文。"
+                )
+
+                if is_group:
+                    analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
+                else:
+                    analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
+
+                if analysis:
+                    self.sender.send_text(
+                        sender_id,
+                        f"📊 「{file_name}」分析结果：\n\n{analysis}",
+                    )
+                else:
+                    self.sender.send_text(
+                        sender_id,
+                        f"分析「{file_name}」时 AI 没有返回结果，请稍后重试 😵",
+                    )
+        finally:
+            # Clean up temp file
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _show_group_help(self, sender_id: str):
         self.sender.send_text(
