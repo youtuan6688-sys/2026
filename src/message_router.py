@@ -411,6 +411,12 @@ class MessageRouter:
             self._handle_file_message(sender_id, stripped, chat_type, sender_open_id)
             return
 
+        # ── Quoted/reply message: check if it references a file ──
+        parent_id = getattr(raw_message, "parent_id", None) if raw_message else None
+        if parent_id:
+            if self._handle_quoted_file(sender_id, stripped, parent_id, chat_type, sender_open_id):
+                return
+
         # Resolve the actual user's open_id
         user_id = sender_open_id or sender_id
         is_group = chat_type == "group"
@@ -1448,10 +1454,10 @@ class MessageRouter:
             logger.error(f"Failed to log file request: {e}", exc_info=True)
 
     def _analyze_file(self, sender_id: str, msg_type: str, file_name: str,
-                       file_key: str, message_id: str, chat_type: str):
+                       file_key: str, message_id: str, chat_type: str,
+                       user_prompt: str = ""):
         """Download, parse, and analyze a supported file."""
         category = file_handler.get_file_category(file_name)
-        is_group = chat_type == "group"
 
         # Send "processing" indicator
         self.sender.send_text(sender_id, f"收到「{file_name}」，正在分析... ⏳")
@@ -1472,6 +1478,7 @@ class MessageRouter:
             content_text, _ = file_handler.parse_file(
                 file_path, file_name,
                 gemini_api_key=settings.gemini_api_key,
+                user_prompt=user_prompt,
             )
 
             if category == "image":
@@ -1479,21 +1486,27 @@ class MessageRouter:
                 reply = f"📷 图片分析结果：\n\n{content_text}"
                 self.sender.send_text(sender_id, reply)
             else:
-                # Excel/CSV: pass content to Claude for analysis
-                prompt = (
-                    f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
-                    f"{content_text}\n\n"
-                    f"请分析这个数据：\n"
-                    f"1. 概述数据内容和结构\n"
-                    f"2. 找出关键数据点和趋势\n"
-                    f"3. 给出有价值的洞察\n"
-                    f"回复要简洁实用，用中文。"
-                )
-
-                if is_group:
-                    analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
+                # Excel/CSV/PDF: pass content to Claude for analysis
+                if user_prompt:
+                    # User gave specific instructions (e.g. via quoted reply)
+                    prompt = (
+                        f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
+                        f"{content_text}\n\n"
+                        f"用户的要求：{user_prompt}\n\n"
+                        f"请根据用户要求分析数据，回复简洁实用，用中文。"
+                    )
                 else:
-                    analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
+                    prompt = (
+                        f"用户发送了一个{category.upper()}文件「{file_name}」，内容如下：\n\n"
+                        f"{content_text}\n\n"
+                        f"请分析这个数据：\n"
+                        f"1. 概述数据内容和结构\n"
+                        f"2. 找出关键数据点和趋势\n"
+                        f"3. 给出有价值的洞察\n"
+                        f"回复要简洁实用，用中文。"
+                    )
+
+                analysis = self.quota.call_claude(prompt, "sonnet", timeout=90)
 
                 if analysis:
                     self.sender.send_text(
@@ -1511,6 +1524,82 @@ class MessageRouter:
                 file_path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+    def _fetch_message(self, message_id: str) -> dict | None:
+        """Fetch a message by ID from Feishu API. Returns parsed dict or None."""
+        from lark_oapi.api.im.v1 import GetMessageRequest
+
+        request = (
+            GetMessageRequest.builder()
+            .message_id(message_id)
+            .build()
+        )
+        try:
+            resp = self.doc_manager.client.im.v1.message.get(request)
+            if not resp.success():
+                logger.error(f"Failed to fetch message {message_id}: code={resp.code}, msg={resp.msg}")
+                return None
+
+            items = resp.data.items
+            if not items:
+                return None
+
+            msg = items[0]
+            body_content = msg.body.content if msg.body else None
+            return {
+                "message_id": msg.message_id,
+                "msg_type": msg.msg_type,
+                "content": json.loads(body_content) if body_content else {},
+            }
+        except Exception as e:
+            logger.error(f"Error fetching message {message_id}: {e}", exc_info=True)
+            return None
+
+    def _handle_quoted_file(self, sender_id: str, user_text: str,
+                             parent_id: str, chat_type: str,
+                             sender_open_id: str) -> bool:
+        """Check if quoted message is a file and analyze it. Returns True if handled."""
+        parent = self._fetch_message(parent_id)
+        if not parent:
+            return False
+
+        msg_type = parent.get("msg_type", "")
+        content = parent.get("content", {})
+
+        # Check if the quoted message is a file or image
+        if msg_type not in ("file", "image", "media"):
+            return False
+
+        file_name = content.get("file_name", content.get("image_key", ""))
+        file_key = content.get("file_key", content.get("image_key", ""))
+        message_id = parent.get("message_id", parent_id)
+
+        if not file_key:
+            return False
+
+        logger.info(f"Quoted file detected: type={msg_type}, name={file_name}, key={file_key}")
+
+        # Log the request
+        user_id = sender_open_id or sender_id
+        self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
+
+        if file_name and file_handler.is_supported(file_name):
+            # Pass user's text as context for analysis
+            self._analyze_file(
+                sender_id, msg_type, file_name, file_key,
+                message_id, chat_type, user_prompt=user_text,
+            )
+        else:
+            type_labels = {"file": "文件", "image": "图片", "media": "媒体"}
+            label = type_labels.get(msg_type, msg_type)
+            name_hint = f"「{file_name}」" if file_name else ""
+            self.sender.send_text(
+                sender_id,
+                f"收到你引用的{label}{name_hint}，但暂时不支持这个格式 🫠\n\n"
+                f"目前支持：Excel (.xlsx/.xls)、CSV、PDF、图片 (png/jpg/gif)\n",
+            )
+
+        return True
 
     def _show_group_help(self, sender_id: str):
         self.sender.send_text(
