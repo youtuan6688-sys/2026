@@ -203,8 +203,23 @@ class ContactMemory:
 
         return "\n".join(parts)
 
+    def set_name(self, open_id: str, name: str):
+        """Set a user's name from an external source (e.g. member events)."""
+        if not name or not open_id:
+            return
+        profile = self.load(open_id)
+        if not profile.get("name"):
+            profile["name"] = name
+            self.save(open_id, profile)
+            logger.info(f"Name set externally for {open_id}: {name}")
+        self._name_cache[open_id] = name
+
     def _fetch_name(self, open_id: str) -> str:
-        """Fetch user's real name from Feishu API."""
+        """Fetch user's real name from Feishu API.
+
+        Tries contact API first, falls back to chat member list.
+        """
+        # 1. Try contact API (requires contact:user.base:readonly scope)
         try:
             req = GetUserRequest.builder() \
                 .user_id(open_id) \
@@ -216,9 +231,36 @@ class ContactMemory:
                 if name:
                     self._name_cache[open_id] = name
                     return name
-            logger.warning(f"Failed to fetch name for {open_id}: {resp.msg if not resp.success() else 'no name'}")
         except Exception as e:
-            logger.warning(f"Error fetching user name: {e}")
+            logger.debug(f"Contact API failed for {open_id}: {e}")
+
+        # 2. Fallback: search in known chat members
+        name = self._fetch_name_from_chats(open_id)
+        if name:
+            self._name_cache[open_id] = name
+            return name
+
+        logger.warning(f"Could not resolve name for {open_id}")
+        return ""
+
+    # Known group chat IDs where bot is a member
+    _KNOWN_CHATS = ["oc_4f17f731a0a3bf9489c095c26be6dedc"]
+
+    def _fetch_name_from_chats(self, open_id: str) -> str:
+        """Fallback: find user name by listing chat members."""
+        from lark_oapi.api.im.v1 import GetChatMembersRequest
+
+        for chat_id in self._KNOWN_CHATS:
+            try:
+                req = GetChatMembersRequest.builder().chat_id(chat_id).build()
+                resp = self._client.im.v1.chat_members.get(req)
+                if resp.success() and resp.data and resp.data.items:
+                    for member in resp.data.items:
+                        if member.member_id == open_id and member.name:
+                            logger.info(f"Name found via chat members: {open_id} = {member.name}")
+                            return member.name
+            except Exception as e:
+                logger.debug(f"Chat members lookup failed for {chat_id}: {e}")
         return ""
 
     def list_contacts(self) -> list[dict]:

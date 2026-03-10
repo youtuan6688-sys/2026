@@ -82,6 +82,16 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
 
                 logger.info(f"New member joined chat {chat_id}: {name} ({open_id})")
 
+                # Save name to contact memory on join
+                if open_id and name and name != "新朋友":
+                    try:
+                        from src.contact_memory import ContactMemory
+                        from config.settings import settings as app_settings
+                        cm = ContactMemory(app_settings)
+                        cm.set_name(open_id, name)
+                    except Exception as e:
+                        logger.debug(f"Failed to save member name: {e}")
+
                 feishu_sender.send_welcome(chat_id, name, open_id)
 
         except Exception as e:
