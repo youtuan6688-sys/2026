@@ -25,6 +25,7 @@ from src.storage.vector_store import VectorStore
 from src.feishu_sender import FeishuSender
 from config.settings import settings
 from src.feishu_docs import FeishuDocManager
+from src.feishu_bitable import FeishuBitableManager
 from src.contact_memory import ContactMemory
 from src.concurrency import MessageGate
 from src.quota_tracker import QuotaTracker
@@ -63,6 +64,7 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         self.error_tracker = error_tracker or ErrorTracker()
         self.checkpoint_manager = checkpoint_manager or CheckpointManager()
         self.doc_manager = FeishuDocManager(settings)
+        self.bitable_manager = FeishuBitableManager(settings)
         self.contacts = ContactMemory(settings)
         self.gate = MessageGate(max_group_workers=2)
         self.quota = QuotaTracker()
@@ -99,7 +101,8 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         r"(会话|session|运行中|停止.*会话|查看.*输出|后台.*任务)"
     )
     _DOCUMENT_PATTERNS = re.compile(
-        r"(文档|doc|飞书文档|创建文档|写入文档|读取文档|分享文档)"
+        r"(文档|doc|飞书文档|创建文档|写入文档|读取文档|分享文档|"
+        r"多维表格|bitable|数据表)"
     )
     _TASK_DONE_PATTERNS = re.compile(
         r"^(搞定了|完成了|做完了|弄好了|ok了|已完成|done|不用了|算了|取消吧)\s*$",
