@@ -20,7 +20,6 @@ from pathlib import Path
 import httpx
 
 from config.settings import settings
-from src.adb_bot import ADBBot
 
 logger = logging.getLogger(__name__)
 
@@ -259,19 +258,25 @@ def _build_story_prompt(highlights: dict, style: dict,
 
 def _write_story(highlights: dict, style: dict,
                  target_date: date) -> str:
-    """Write creative story — ADB (phone DeepSeek app) first, API fallback."""
+    """Write creative story — phone DeepSeek app (free) first, API fallback."""
     prompt = _build_story_prompt(highlights, style, target_date)
 
-    # Try ADB first (free, uses phone DeepSeek app)
+    # Try phone DeepSeek app first (free, via uiautomator2)
     try:
-        bot = ADBBot()
-        story = bot.deepseek_chat(prompt, timeout=150)
-        if story and not story.startswith("["):
-            logger.info("Story generated via ADB DeepSeek app")
+        import importlib.util
+        _phone_ai_path = Path(__file__).parent.parent / "devices" / "oppo-PDYM20" / "scripts" / "phone_ai.py"
+        _spec = importlib.util.spec_from_file_location("phone_ai", _phone_ai_path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        PhoneAI, DEEPSEEK = _mod.PhoneAI, _mod.DEEPSEEK
+        ai = PhoneAI()
+        story = ai.generate_content(prompt, app=DEEPSEEK)
+        if story and len(story) > 100:
+            logger.info(f"Story generated via phone DeepSeek app ({len(story)} chars)")
             return story
-        logger.warning(f"ADB DeepSeek returned incomplete: {story[:50]}")
+        logger.warning(f"Phone DeepSeek returned too short: {len(story)} chars")
     except Exception as e:
-        logger.warning(f"ADB DeepSeek failed, falling back to API: {e}")
+        logger.warning(f"Phone DeepSeek failed, falling back to API: {e}")
 
     # Fallback: DeepSeek API
     try:
@@ -325,22 +330,39 @@ def _build_image_prompts(style: dict) -> list[str]:
 
 def _generate_images(story: str, style: dict,
                      target_date: date) -> list[Path]:
-    """Generate 6 images — ADB (phone Gemini app) first, API fallback."""
+    """Generate 6 images — phone Gemini app (free) first, API fallback."""
     output_dir = REPORT_DIR / target_date.isoformat()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     scene_prompts = _build_image_prompts(style)
 
-    # Try ADB first (free, uses phone Gemini app)
+    # Try phone Gemini app first (free, via uiautomator2)
     try:
-        bot = ADBBot()
-        images = bot.gemini_generate_images(scene_prompts, output_dir)
+        import importlib.util
+        _gemini_path = Path(__file__).parent.parent / "devices" / "oppo-PDYM20" / "scripts" / "gemini_image.py"
+        _spec = importlib.util.spec_from_file_location("gemini_image", _gemini_path)
+        _mod = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)
+        GeminiImageGenerator = _mod.GeminiImageGenerator
+        gen = GeminiImageGenerator()
+        images = []
+        for i, prompt in enumerate(scene_prompts):
+            filename = f"scene_{i + 1}.png"
+            result = gen.generate_and_download(prompt, filename)
+            if result and result.exists():
+                # Copy to output_dir
+                import shutil
+                dest = output_dir / filename
+                shutil.copy2(result, dest)
+                images.append(dest)
+                logger.info(f"Generated image {i + 1}/6 via phone Gemini")
+            else:
+                logger.warning(f"Phone Gemini: image {i + 1} failed")
         if images:
-            logger.info(f"Generated {len(images)} images via ADB Gemini app")
             return images
-        logger.warning("ADB Gemini returned no images")
+        logger.warning("Phone Gemini returned no images")
     except Exception as e:
-        logger.warning(f"ADB Gemini failed, falling back to API: {e}")
+        logger.warning(f"Phone Gemini failed, falling back to API: {e}")
 
     # Fallback: Gemini API
     try:
