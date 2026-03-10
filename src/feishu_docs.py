@@ -14,6 +14,10 @@ import re
 
 import lark_oapi as lark
 from lark_oapi.api.docx.v1 import (
+    Block,
+    Text,
+    TextElement,
+    TextRun,
     CreateDocumentRequest,
     CreateDocumentRequestBody,
     GetDocumentRequest,
@@ -118,46 +122,60 @@ class FeishuDocManager:
     def write_content(self, url_or_id: str, text: str) -> bool:
         """Append text content to an existing document.
 
-        Splits text into paragraphs and adds them as blocks.
+        Splits text into paragraphs and adds them as Block objects
+        using the SDK builder (not raw dicts).
         """
         doc_id = self.extract_doc_id(url_or_id)
 
-        # Get root block ID (same as doc_id for docx)
-        paragraphs = text.strip().split("\n")
-        children = []
-        for para in paragraphs:
-            if not para.strip():
-                continue
-            children.append({
-                "block_type": 2,  # paragraph
-                "paragraph": {
-                    "elements": [
-                        {"text_run": {"content": para}}
-                    ]
-                }
-            })
-
-        if not children:
+        paragraphs = [p for p in text.strip().split("\n") if p.strip()]
+        if not paragraphs:
             return True
 
-        body = CreateDocumentBlockChildrenRequestBody.builder() \
-            .children(children) \
-            .index(-1) \
-            .build()
+        # Build Block objects in batches of 50 (API limit)
+        batch_size = 50
+        total_written = 0
 
-        req = CreateDocumentBlockChildrenRequest.builder() \
-            .document_id(doc_id) \
-            .block_id(doc_id) \
-            .request_body(body) \
-            .build()
+        for batch_start in range(0, len(paragraphs), batch_size):
+            batch = paragraphs[batch_start:batch_start + batch_size]
+            blocks = []
+            for para in batch:
+                block = Block.builder() \
+                    .block_type(2) \
+                    .text(
+                        Text.builder().elements([
+                            TextElement.builder().text_run(
+                                TextRun.builder()
+                                .content(para[:2000])
+                                .build()
+                            ).build()
+                        ]).build()
+                    ).build()
+                blocks.append(block)
 
-        resp = self.client.docx.v1.document_block_children.create(req)
+            body = CreateDocumentBlockChildrenRequestBody.builder() \
+                .children(blocks) \
+                .index(-1) \
+                .build()
 
-        if not resp.success():
-            logger.error(f"Failed to write to doc {doc_id}: code={resp.code}, msg={resp.msg}")
-            return False
+            req = CreateDocumentBlockChildrenRequest.builder() \
+                .document_id(doc_id) \
+                .block_id(doc_id) \
+                .request_body(body) \
+                .build()
 
-        logger.info(f"Wrote {len(children)} blocks to document {doc_id}")
+            resp = self.client.docx.v1.document_block_children.create(req)
+
+            if not resp.success():
+                logger.error(
+                    f"Failed to write to doc {doc_id} "
+                    f"(batch {batch_start // batch_size + 1}): "
+                    f"code={resp.code}, msg={resp.msg}"
+                )
+                return False
+
+            total_written += len(blocks)
+
+        logger.info(f"Wrote {total_written} blocks to document {doc_id}")
         return True
 
     def create_and_write(self, title: str, content: str,
