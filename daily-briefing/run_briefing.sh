@@ -5,7 +5,7 @@
 # Load user's shell configuration to get environment variables
 [ -f ~/.zshrc ] && source ~/.zshrc
 
-set -uo pipefail
+set -o pipefail
 
 PROJECT_DIR="/Users/tuanyou/Happycode2026/daily-briefing"
 REPORTS_DIR="$PROJECT_DIR/reports"
@@ -20,6 +20,14 @@ LOG_FILE="$LOGS_DIR/${DATE}.log"
 mkdir -p "$REPORTS_DIR" "$LOGS_DIR"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"; }
+
+# Load .env for FEISHU vars etc.
+ENV_FILE="/Users/tuanyou/Happycode2026/.env"
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+fi
 
 log "Briefing started"
 
@@ -37,7 +45,7 @@ export PATH="/Users/tuanyou/.local/bin:$PATH"
 export USER="${USER:-tuanyou}"
 
 # Debug: Check environment
-log "DEBUG: HOME=$HOME, USER=$USER, ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:+set}${ANTHROPIC_API_KEY:-unset}"
+log "DEBUG: HOME=$HOME, USER=$USER, ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-unset}"
 log "DEBUG: claude binary: $(which claude)"
 log "DEBUG: CLAUDECODE=${CLAUDECODE:-unset}"
 
@@ -55,7 +63,7 @@ else
     log "DEBUG: claude command succeeded, report size: $(wc -c < "$REPORT_FILE")"
 fi
 
-if [ $? -eq 0 ] && [ -s "$REPORT_FILE" ]; then
+if [ $EXIT_CODE -eq 0 ] && [ -s "$REPORT_FILE" ]; then
     log "Report generated: $REPORT_FILE ($(wc -c < "$REPORT_FILE") bytes)"
 
     # Prepend system health + overnight error report
@@ -65,12 +73,14 @@ if [ $? -eq 0 ] && [ -s "$REPORT_FILE" ]; then
         HEALTH_SECTION="## System Health\n\`\`\`\n${HEALTH_RESULT}\n\`\`\`\n\n"
     fi
 
-    # Check pending actions from nightly review
+    # Check pending actions from nightly review (only DEFER lines, max 10)
     PENDING_FILE="/Users/tuanyou/Happycode2026/vault/memory/pending-actions.md"
     PENDING_SECTION=""
     if [ -f "$PENDING_FILE" ] && [ -s "$PENDING_FILE" ]; then
-        PENDING_CONTENT=$(tail -30 "$PENDING_FILE")
-        PENDING_SECTION="## Overnight Actions Pending\n${PENDING_CONTENT}\n\n"
+        PENDING_CONTENT=$(grep -E "^- DEFER:" "$PENDING_FILE" | tail -10)
+        if [ -n "$PENDING_CONTENT" ]; then
+            PENDING_SECTION="## Pending Actions\n${PENDING_CONTENT}\n\n"
+        fi
     fi
 
     # Check overnight error summary
@@ -92,13 +102,10 @@ else:
         ERROR_SECTION="## Error Report\n${ERROR_SUMMARY}\n\n"
     fi
 
-    # Combine health + errors + main report
+    # Append health + errors + pending to end of report (not prepend, to avoid polluting content)
     if [ -n "$HEALTH_SECTION" ] || [ -n "$ERROR_SECTION" ] || [ -n "$PENDING_SECTION" ]; then
-        COMBINED_FILE="${REPORT_FILE%.md}_full.md"
-        printf "%b%b%b---\n\n" "$HEALTH_SECTION" "$ERROR_SECTION" "$PENDING_SECTION" > "$COMBINED_FILE"
-        cat "$REPORT_FILE" >> "$COMBINED_FILE"
-        mv "$COMBINED_FILE" "$REPORT_FILE"
-        log "Added health/error/pending sections to report"
+        printf "\n---\n\n%b%b%b" "$HEALTH_SECTION" "$ERROR_SECTION" "$PENDING_SECTION" >> "$REPORT_FILE"
+        log "Appended health/error/pending sections to report"
     fi
 
     # Send to Feishu
@@ -131,10 +138,9 @@ $(cat "$REPORT_FILE")"
 
     ACTIONS=$(claude -p "$EVOLVE_PROMPT" 2>> "$LOG_FILE")
     if [ -n "$ACTIONS" ] && [ "$ACTIONS" != "无需行动" ]; then
-        LEARNINGS_FILE="/Users/tuanyou/Happycode2026/vault/memory/learnings.md"
         PENDING_FILE="/Users/tuanyou/Happycode2026/vault/memory/pending-actions.md"
-        printf "\n## %s - 简报行动建议\n%s\n" "$DATE" "$ACTIONS" >> "$LEARNINGS_FILE"
-        log "Evolution suggestions appended to learnings"
+        # Note: learnings extraction is handled by deep_absorb.py to avoid duplicates
+        log "Evolution suggestions found, routing to auto-exec/defer pipeline"
 
         # Auto-execute safe actions (skill installs, config updates)
         EXEC_PROMPT="你是一个自我进化的 AI 助手。以下是建议的行动，请判断哪些可以安全自动执行。

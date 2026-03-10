@@ -298,31 +298,55 @@ def evolve_contacts(entries: list[dict]) -> dict[str, str]:
 
 
 def extract_knowledge(entries: list[dict]) -> str:
-    """Extract decisions and learnings from the day's private conversations."""
-    private_entries = [e for e in entries if e.get("chat_type") == "p2p"]
-    if not private_entries:
-        return "No private conversations today."
+    """Extract decisions and learnings from ALL conversations (private + group)."""
+    if not entries:
+        return "No conversations today."
 
-    # Build summary
-    lines = []
-    for e in private_entries[:30]:
-        lines.append(f"用户: {e['user_msg'][:300]}")
-        if e.get("bot_reply"):
-            lines.append(f"助手: {e['bot_reply'][:500]}")
-        lines.append("---")
+    # Build summary from both private and group chats
+    private_lines = []
+    group_lines = []
 
-    conv_text = "\n".join(lines)
+    for e in entries[:50]:
+        msg_line = f"用户: {e['user_msg'][:300]}"
+        reply_line = f"助手: {e['bot_reply'][:500]}" if e.get("bot_reply") else ""
+        if e.get("chat_type") == "p2p":
+            private_lines.append(msg_line)
+            if reply_line:
+                private_lines.append(reply_line)
+            private_lines.append("---")
+        else:
+            group_lines.append(msg_line)
+            if reply_line:
+                group_lines.append(reply_line)
+            group_lines.append("---")
+
+    sections = []
+    if private_lines:
+        sections.append(f"## 私聊记录\n" + "\n".join(private_lines[:60]))
+    if group_lines:
+        sections.append(f"## 群聊记录\n" + "\n".join(group_lines[:60]))
+
+    if not sections:
+        return "No conversations today."
+
+    conv_text = "\n\n".join(sections)
 
     prompt = (
-        "你是一个自我进化的 AI 助手的学习模块。分析今天的全部私聊交互，提取：\n\n"
+        "你是一个自我进化的 AI 助手的学习模块。分析今天的全部交互（私聊+群聊），提取：\n\n"
         "## 1. 决策 (用户今天做了哪些决策)\n"
         "每条格式: DECISION: <描述>\n\n"
         "## 2. 知识 (值得长期记住的内容)\n"
+        "来源可以是：\n"
+        "- 私聊中用户的明确指示或偏好\n"
+        "- 群聊中有价值的信息、需求、技术讨论\n"
+        "- 群友提出的好问题或好建议\n"
+        "- 群聊中发现的用户需求和痛点\n\n"
         "每条格式:\n"
         "FILE: <decisions.md 或 learnings.md 或 profile.md 或 patterns.md>\n"
         "CONTENT: <要追加的内容>\n\n"
+        "注意：群聊中的闲聊、表情、无实质内容跳过。只提取有价值的知识。\n"
         "如果没有值得提取的，输出: SKIP\n\n"
-        f"今日私聊记录:\n{conv_text}"
+        f"今日记录:\n{conv_text}"
     )
 
     output = _call_opus(prompt)
@@ -342,7 +366,7 @@ def extract_knowledge(entries: list[dict]) -> str:
             if current_file in {"decisions.md", "learnings.md", "profile.md", "patterns.md"}:
                 _append_to_memory(current_file, f"- [{date.today().isoformat()}] {content}")
 
-    logger.info(f"Knowledge extracted: {len(output)} chars")
+    logger.info(f"Knowledge extracted from {len(entries)} entries: {len(output)} chars")
     return output
 
 

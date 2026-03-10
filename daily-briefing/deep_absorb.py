@@ -156,8 +156,18 @@ def write_to_memory(extracted: dict):
 
 
 def _append_section(filepath: Path, content: str):
-    """Append a section to a file, creating if needed."""
+    """Append a section to a file, creating if needed. Deduplicates by section header."""
     filepath.parent.mkdir(parents=True, exist_ok=True)
+
+    # Dedup: if the section header already exists today, skip
+    if filepath.exists():
+        existing = filepath.read_text(encoding="utf-8")
+        # Extract the first line as section header for dedup check
+        header = content.split("\n")[0].strip()
+        if header and header in existing:
+            logger.info(f"Skipping duplicate section '{header}' in {filepath.name}")
+            return
+
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(f"\n\n{content}\n")
 
@@ -460,6 +470,127 @@ def check_watched_repos() -> str:
     return result
 
 
+def score_vault_articles(today: str) -> list[dict]:
+    """Score recent vault articles by quality and relevance.
+
+    Returns list of {file, title, score, reason} sorted by score desc.
+    Scores 1-10: 8+ = high value, 5-7 = medium, <5 = low.
+    """
+    articles_dir = VAULT_ARTICLES_DIR
+    social_dir = VAULT_DIR / "social"
+    recent_files = []
+
+    for folder in [articles_dir, social_dir]:
+        if not folder.exists():
+            continue
+        for f in folder.iterdir():
+            if f.suffix == ".md" and f.name.startswith(today[:8]):  # Same month
+                recent_files.append(f)
+
+    if not recent_files:
+        return []
+
+    # Build article list for scoring
+    article_summaries = []
+    for f in sorted(recent_files, key=lambda x: x.stat().st_mtime, reverse=True)[:20]:
+        content = f.read_text(encoding="utf-8")
+        # Extract title from frontmatter
+        title_match = re.search(r'title:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
+        title = title_match.group(1) if title_match else f.stem
+        # Extract summary
+        summary_match = re.search(r'summary:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
+        summary = summary_match.group(1) if summary_match else content[500:800]
+        article_summaries.append({"file": str(f), "title": title, "summary": summary[:200]})
+
+    if not article_summaries:
+        return []
+
+    summaries_text = "\n".join(
+        f"{i+1}. [{a['title']}] {a['summary']}" for i, a in enumerate(article_summaries)
+    )
+
+    prompt = (
+        "你是知识质量评估模块。对以下文章评分 (1-10)，基于：\n"
+        "- 可复用性（能否直接用于我们的项目/工作流？）\n"
+        "- 深度（是否有独到洞察，而非泛泛介绍？）\n"
+        "- 时效性（是否涉及最新技术/趋势？）\n"
+        "- 与我们相关性（AI工具、Claude生态、知识管理、内容创作）\n\n"
+        f"文章列表：\n{summaries_text}\n\n"
+        "输出 JSON 数组，每项：{\"index\": N, \"score\": X, \"reason\": \"一句话\"}\n"
+        "只输出 JSON。"
+    )
+
+    result = _call_sonnet(prompt, timeout=60)
+    try:
+        json_match = re.search(r'\[[\s\S]*\]', result)
+        if json_match:
+            scores = json.loads(json_match.group())
+            scored = []
+            for s in scores:
+                idx = s.get("index", 0) - 1
+                if 0 <= idx < len(article_summaries):
+                    scored.append({
+                        **article_summaries[idx],
+                        "score": s.get("score", 5),
+                        "reason": s.get("reason", ""),
+                    })
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            logger.info(f"Scored {len(scored)} articles, top: {scored[0]['title']} ({scored[0]['score']}/10)" if scored else "No scores")
+            return scored
+    except (json.JSONDecodeError, IndexError) as e:
+        logger.warning(f"Failed to parse article scores: {e}")
+    return []
+
+
+def synthesize_knowledge(today: str):
+    """Cross-reference recent articles and memory to find patterns and connections.
+
+    This is the 'thinking' step — connecting dots across sources.
+    """
+    # Read recent learnings and trends
+    learnings = LEARNINGS_FILE.read_text(encoding="utf-8") if LEARNINGS_FILE.exists() else ""
+    trends = TRENDS_FILE.read_text(encoding="utf-8") if TRENDS_FILE.exists() else ""
+
+    # Read recent article titles
+    article_titles = []
+    for folder in [VAULT_ARTICLES_DIR, VAULT_DIR / "social"]:
+        if not folder.exists():
+            continue
+        for f in sorted(folder.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True)[:15]:
+            if f.suffix == ".md":
+                content = f.read_text(encoding="utf-8")[:500]
+                title_match = re.search(r'title:\s*["\']?(.+?)["\']?\s*$', content, re.MULTILINE)
+                if title_match:
+                    article_titles.append(title_match.group(1))
+
+    if not article_titles:
+        return
+
+    titles_text = "\n".join(f"- {t}" for t in article_titles)
+
+    prompt = (
+        f"今天是 {today}。你是知识综合模块。\n\n"
+        "任务：分析最近积累的知识，找出跨来源的规律和可行动的洞察。\n\n"
+        f"最近文章标题：\n{titles_text}\n\n"
+        f"最近趋势（最后 2000 字）：\n{trends[-2000:]}\n\n"
+        f"最近学习（最后 1500 字）：\n{learnings[-1500:]}\n\n"
+        "输出：\n"
+        "## 知识连接\n"
+        "- 找出 2-3 个跨文章/跨来源的共同主题或趋势\n\n"
+        "## 行动建议\n"
+        "- 基于综合分析，给出 2-3 个具体可行动的建议\n\n"
+        "## 知识缺口\n"
+        "- 指出 1-2 个我们应该关注但还没覆盖的领域\n\n"
+        "简洁输出，每个小节 2-3 条即可。"
+    )
+
+    result = _call_sonnet(prompt, timeout=90)
+    if result and len(result) > 50:
+        synthesis_file = MEMORY_DIR / "knowledge-synthesis.md"
+        _append_section(synthesis_file, f"## {today} - 知识综合\n{result}")
+        logger.info("Knowledge synthesis written")
+
+
 def run(report_path: str):
     """Main entry: deep absorb from a briefing report."""
     report_file = Path(report_path)
@@ -484,22 +615,36 @@ def run(report_path: str):
     # Step 2: Extract structured knowledge from the report
     extracted = deep_read_and_extract(report_text)
 
-    # Step 3: Write to memory files
+    # Step 3: Write to memory files (with dedup)
     write_to_memory(extracted)
 
-    # Step 4: Extract content creation ideas (公众号/小红书素材)
+    # Step 4: Score recent vault articles by quality
+    try:
+        scores = score_vault_articles(today)
+        if scores:
+            high_value = [s for s in scores if s["score"] >= 8]
+            low_value = [s for s in scores if s["score"] <= 3]
+            if high_value:
+                logger.info(f"High-value articles ({len(high_value)}): " +
+                           ", ".join(f"{s['title']}({s['score']})" for s in high_value[:3]))
+            if low_value:
+                logger.info(f"Low-value articles ({len(low_value)}): consider cleanup")
+    except Exception as e:
+        logger.warning(f"Article scoring failed (non-fatal): {e}")
+
+    # Step 5: Extract content creation ideas (公众号/小红书素材)
     try:
         extract_content_ideas(report_text, today)
     except Exception as e:
         logger.warning(f"Failed to extract content ideas: {e}")
 
-    # Step 5: Save evolution log to vault
+    # Step 6: Save evolution log to vault
     try:
         save_evolution_to_vault(today)
     except Exception as e:
         logger.warning(f"Failed to save evolution log: {e}")
 
-    # Step 6: Check watched repos for notable changes
+    # Step 7: Check watched repos for notable changes
     try:
         watch_report = check_watched_repos()
         if watch_report:
@@ -507,7 +652,13 @@ def run(report_path: str):
     except Exception as e:
         logger.warning(f"Watch list check failed (non-fatal): {e}")
 
-    # Step 7: Compress trends if needed
+    # Step 8: Cross-reference and synthesize knowledge
+    try:
+        synthesize_knowledge(today)
+    except Exception as e:
+        logger.warning(f"Knowledge synthesis failed (non-fatal): {e}")
+
+    # Step 9: Compress trends if needed
     try:
         compress_trends()
     except Exception as e:

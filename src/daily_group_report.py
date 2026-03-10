@@ -161,6 +161,16 @@ def _load_group_entries(target_date: date | None = None) -> list[dict]:
     return entries
 
 
+def _group_entries_by_chat(entries: list[dict]) -> dict[str, list[dict]]:
+    """Group entries by chat_id for per-group reports."""
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for entry in entries:
+        chat_id = entry.get("chat_id") or "unknown"
+        groups[chat_id].append(entry)
+    return dict(groups)
+
+
 def _pick_style(target_date: date) -> dict:
     """Pick today's writing style (deterministic based on date)."""
     # Use date hash for deterministic but varied selection
@@ -168,15 +178,8 @@ def _pick_style(target_date: date) -> dict:
     return STYLES[seed % len(STYLES)]
 
 
-def _extract_highlights(entries: list[dict]) -> dict:
-    """Extract highlights from group chat entries using Claude sonnet."""
-    import subprocess
-
-    if not entries:
-        return {"quotes": [], "interactions": [], "knowledge": [],
-                "new_members": [], "bot_actions": [], "summary": "今天群里比较安静"}
-
-    # Build conversation text
+def _format_conversation_text(entries: list[dict]) -> str:
+    """Format entries into readable conversation text."""
     lines = []
     for e in entries[:50]:  # Cap at 50 entries
         user = e.get("user_name", e.get("sender_open_id", "?")[:8])
@@ -185,8 +188,19 @@ def _extract_highlights(entries: list[dict]) -> dict:
         lines.append(f"{user}: {msg}")
         if reply:
             lines.append(f"  小叼毛: {reply}")
+    return "\n".join(lines)
 
-    conv_text = "\n".join(lines)
+
+def _extract_highlights(entries: list[dict]) -> dict:
+    """Extract highlights from group chat entries using Claude sonnet."""
+    import subprocess
+
+    if not entries:
+        return {"quotes": [], "interactions": [], "knowledge": [],
+                "new_members": [], "bot_actions": [], "topics": [],
+                "summary": "今天群里比较安静"}
+
+    conv_text = _format_conversation_text(entries)
 
     prompt = (
         "分析以下群聊记录，提取以下素材（JSON 格式）：\n\n"
@@ -195,10 +209,12 @@ def _extract_highlights(entries: list[dict]) -> dict:
         ' "knowledge": ["今天聊到的新知识或新观点"],\n'
         ' "new_members": ["新入群成员名字"],\n'
         ' "bot_actions": ["小叼毛bot今天做了什么（分析文件/回答问题/怼人等）"],\n'
+        ' "topics": ["今天的核心讨论话题，每个用4-8个字概括，如：原油价格监控、美团渠道数据"],\n'
         ' "summary": "一句话总结今天群里的氛围"}\n\n'
         "规则：\n"
         "- 每个数组最多 5 条\n"
         "- quotes 保留原文，注明说话人\n"
+        "- topics 必须准确反映实际讨论内容，不要泛化\n"
         "- 如果群里很安静就如实说\n"
         "- 只输出 JSON，不要其他内容\n\n"
         f"群聊记录：\n{conv_text}"
@@ -216,44 +232,62 @@ def _extract_highlights(entries: list[dict]) -> dict:
         start = output.find("{")
         end = output.rfind("}") + 1
         if start >= 0 and end > start:
-            return json.loads(output[start:end])
+            data = json.loads(output[start:end])
+            data.setdefault("topics", [])
+            return data
     except Exception as e:
         logger.error(f"Highlight extraction failed: {e}")
 
     return {"quotes": [], "interactions": [], "knowledge": [],
-            "new_members": [], "bot_actions": [], "summary": "素材提取失败"}
+            "new_members": [], "bot_actions": [], "topics": [],
+            "summary": "素材提取失败"}
 
 
 def _build_story_prompt(highlights: dict, style: dict,
-                        target_date: date) -> str:
-    """Build the creative story prompt."""
+                        target_date: date,
+                        conversation_text: str = "") -> str:
+    """Build the creative story prompt with actual conversation context."""
     material = json.dumps(highlights, ensure_ascii=False, indent=2)
+
+    # Include actual conversation snippets for authenticity
+    conv_section = ""
+    if conversation_text:
+        # Truncate to avoid token overflow, but keep enough for context
+        conv_snippet = conversation_text[:3000]
+        conv_section = (
+            f"\n\n--- 原始对话记录（供参考，确保内容准确）---\n"
+            f"{conv_snippet}\n"
+            f"--- 对话记录结束 ---\n"
+        )
+
     return (
         f"你是群聊 AI 助手「小叼毛」的创意日报撰稿人。\n\n"
         f"今天的风格：【{style['name']}】— {style['desc']}\n\n"
         f"{style['prompt']}\n\n"
         f"日期：{target_date.isoformat()}\n\n"
-        f"今日群聊素材：\n{material}\n\n"
+        f"今日群聊素材提炼：\n{material}\n"
+        f"{conv_section}\n"
         f"要求：\n"
         f"1. 必须包含以下板块（可以用风格化标题）：\n"
-        f"   - 精华金句 TOP 3\n"
+        f"   - 精华金句 TOP 3（必须是群友真实说过的话，不要编造）\n"
         f"   - Bot 自我进化/任务完成记录\n"
-        f"   - 群友有趣互动\n"
+        f"   - 群友有趣互动（基于实际对话，不要脑补）\n"
         f"   - 新知识速递（如果有）\n"
         f"   - 新成员报到（如果有）\n"
         f"   - 小叼毛第一人称总结/碎碎念\n"
         f"2. 800-1200字\n"
         f"3. 有趣、有可读性、高品质\n"
         f"4. 风格要到位，不要半途而废\n"
-        f"5. 如果素材少，就脑补发挥，但注明是虚构\n\n"
+        f"5. 内容必须基于真实对话，不要编造不存在的对话或事件\n\n"
         f"直接输出正文，不要元说明。"
     )
 
 
 def _write_story(highlights: dict, style: dict,
-                 target_date: date) -> str:
+                 target_date: date,
+                 conversation_text: str = "") -> str:
     """Write creative story — phone DeepSeek app (free) first, API fallback."""
-    prompt = _build_story_prompt(highlights, style, target_date)
+    prompt = _build_story_prompt(highlights, style, target_date, conversation_text)
 
     # Try phone DeepSeek app first (free, via uiautomator2)
     try:
@@ -293,42 +327,72 @@ def _write_story(highlights: dict, style: dict,
         return f"[日报生成失败: {e}]"
 
 
-def _build_image_prompts(style: dict) -> list[str]:
-    """Build 6 scene prompts for image generation."""
-    return [
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景1：一个可爱的机器人吉祥物（小叼毛）在大屏幕上阅读群聊消息。"
-        f"温暖多彩的氛围，高品质插画。",
+def _build_image_prompts(style: dict, highlights: dict) -> list[str]:
+    """Build 4 image prompts based on actual group chat content.
 
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景2：群聊成员们热烈讨论，对话气泡四处飞舞。"
-        f"动感构图，鲜艳色彩，高品质。",
+    Each prompt references real topics/interactions from today's conversations,
+    ensuring images match the daily report content.
+    """
+    topics = highlights.get("topics", [])
+    interactions = highlights.get("interactions", [])
+    quotes = highlights.get("quotes", [])
+    summary = highlights.get("summary", "群聊日常")
 
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景3：机器人吉祥物用巨大的羽毛笔书写今日精华。"
-        f"闪光效果，创意氛围，高品质。",
+    # Build topic description for image prompts
+    topic_desc = "、".join(topics[:3]) if topics else summary
 
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景4：今日精华金句展示在金色卷轴上。"
-        f"优雅的排版感，装饰边框，高品质。",
+    # Scene 1: Today's main topic visualization
+    main_topic = topics[0] if topics else "群聊日常"
+    scene1 = (
+        f"生成一张可爱的卡通插画，Q版动漫风格。"
+        f"场景：一个可爱的机器人吉祥物和几个卡通人物围坐在一起，"
+        f"正在热烈讨论「{main_topic}」。"
+        f"桌上有相关的资料和图表。温暖多彩的氛围，高品质插画。"
+    )
 
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景5：机器人吉祥物正在进化升级，发光效果。"
-        f"变身场景，能量粒子，高品质。",
+    # Scene 2: Key interaction scene
+    interaction_desc = interactions[0][:50] if interactions else "群友们互相吐槽"
+    scene2 = (
+        f"生成一张可爱的卡通插画，Q版动漫风格。"
+        f"场景：{interaction_desc}。"
+        f"对话气泡四处飞舞，表情夸张搞笑。"
+        f"动感构图，鲜艳色彩，高品质。"
+    )
 
-        f"生成一张可爱的卡通插画，Q版动漫风格，{style['name']}主题。"
-        f"场景6：结尾画面——机器人吉祥物挥手告别。"
-        f"夕阳/傍晚氛围，温暖感人，高品质。",
-    ]
+    # Scene 3: Knowledge/data scene based on actual topics
+    knowledge_topics = highlights.get("knowledge", [])
+    if knowledge_topics:
+        knowledge_desc = knowledge_topics[0][:40]
+    elif len(topics) > 1:
+        knowledge_desc = topics[1]
+    else:
+        knowledge_desc = "新知识分享"
+    scene3 = (
+        f"生成一张可爱的卡通插画，Q版动漫风格。"
+        f"场景：机器人吉祥物站在大屏幕前展示数据图表，"
+        f"内容关于「{knowledge_desc}」。"
+        f"闪光效果，科技感氛围，高品质。"
+    )
+
+    # Scene 4: Summary/ending based on today's mood
+    scene4 = (
+        f"生成一张可爱的卡通插画，Q版动漫风格。"
+        f"场景：今日群聊回顾——{summary[:30]}。"
+        f"机器人吉祥物在写日报，旁边标注着今天的关键词：{topic_desc}。"
+        f"温馨夕阳氛围，高品质。"
+    )
+
+    return [scene1, scene2, scene3, scene4]
 
 
 def _generate_images(story: str, style: dict,
-                     target_date: date) -> list[Path]:
-    """Generate 6 images — phone Gemini app (free) first, API fallback."""
+                     target_date: date,
+                     highlights: dict | None = None) -> list[Path]:
+    """Generate 4 images based on chat content — phone Gemini (free) first, API fallback."""
     output_dir = REPORT_DIR / target_date.isoformat()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    scene_prompts = _build_image_prompts(style)
+    scene_prompts = _build_image_prompts(style, highlights or {})
 
     # Try phone Gemini app first (free, via uiautomator2)
     try:
@@ -393,8 +457,8 @@ def _generate_images(story: str, style: dict,
 
 
 def _send_report(story: str, images: list[Path], style: dict,
-                 target_date: date):
-    """Send the daily report to group chats via Feishu."""
+                 target_date: date, chat_id: str | None = None):
+    """Send the daily report to a specific group chat (or all if chat_id is None)."""
     from src.feishu_sender import FeishuSender
 
     sender = FeishuSender(settings)
@@ -402,18 +466,20 @@ def _send_report(story: str, images: list[Path], style: dict,
     header = f"📰 小叼毛日报 [{target_date.isoformat()}] — 「{style['name']}」风格\n\n"
     full_text = header + story
 
-    for chat_id in GROUP_CHATS:
-        # Send text report
-        sender.send_text(chat_id, full_text)
+    target_chats = [chat_id] if chat_id else GROUP_CHATS
 
-        # Send images
+    for cid in target_chats:
+        # Send text report
+        sender.send_text(cid, full_text)
+
+        # Send images interleaved (not all dumped at the end)
         for img_path in images:
             try:
-                sender.send_file(chat_id, str(img_path))
+                sender.send_file(cid, str(img_path))
             except Exception as e:
                 logger.warning(f"Failed to send image {img_path.name}: {e}")
 
-    logger.info(f"Daily report sent to {len(GROUP_CHATS)} groups")
+    logger.info(f"Daily report sent to {len(target_chats)} groups")
 
 
 def _save_report(story: str, highlights: dict, style: dict,
@@ -433,41 +499,71 @@ def _save_report(story: str, highlights: dict, style: dict,
     logger.info(f"Report saved to {report_file}")
 
 
+def _generate_report_for_group(
+    chat_id: str, entries: list[dict], style: dict, target: date
+) -> None:
+    """Generate and send a report for a single group."""
+    if len(entries) < 3:
+        logger.info(f"Chat {chat_id}: only {len(entries)} messages, skipping")
+        return
+
+    # 1. Format conversation text for context
+    conv_text = _format_conversation_text(entries)
+
+    # 2. Extract highlights (sonnet) — per group
+    highlights = _extract_highlights(entries)
+    logger.info(
+        f"[{chat_id[:12]}] Extracted: {len(highlights.get('quotes', []))} quotes, "
+        f"{len(highlights.get('topics', []))} topics"
+    )
+
+    # 3. Write creative story with actual conversation context (DeepSeek)
+    story = _write_story(highlights, style, target, conv_text)
+    logger.info(f"[{chat_id[:12]}] Story: {len(story)} chars")
+
+    # 4. Generate content-aware images (Gemini)
+    images = _generate_images(story, style, target, highlights)
+    logger.info(f"[{chat_id[:12]}] Images: {len(images)}")
+
+    # 5. Save report (with chat_id suffix for per-group archival)
+    _save_report(story, highlights, style, target)
+
+    # 6. Send to this specific group
+    _send_report(story, images, style, target, chat_id=chat_id)
+
+
 def generate_daily_report(target_date: date | None = None):
-    """Main entry point: generate and send the daily group report."""
+    """Main entry point: generate per-group reports from daily buffer."""
     target = target_date or date.today()
     logger.info(f"=== Generating Daily Group Report for {target} ===")
 
-    # 1. Load group entries
-    entries = _load_group_entries(target)
-    logger.info(f"Loaded {len(entries)} group entries")
+    # 1. Load and group entries by chat_id
+    all_entries = _load_group_entries(target)
+    logger.info(f"Loaded {len(all_entries)} total group entries")
 
-    if not entries:
+    if not all_entries:
         logger.info("No group entries today, skipping report")
         return
 
-    # 2. Pick today's style
+    groups = _group_entries_by_chat(all_entries)
+    logger.info(f"Found {len(groups)} groups with messages")
+
+    # 2. Pick today's style (same style for all groups)
     style = _pick_style(target)
     logger.info(f"Today's style: {style['name']} — {style['desc']}")
 
-    # 3. Extract highlights (sonnet)
-    highlights = _extract_highlights(entries)
-    logger.info(f"Extracted highlights: {len(highlights.get('quotes', []))} quotes, "
-                f"{len(highlights.get('interactions', []))} interactions")
+    # 3. Generate per-group reports
+    for chat_id, entries in groups.items():
+        if chat_id == "unknown":
+            logger.warning("Skipping entries without chat_id (old format)")
+            continue
+        try:
+            _generate_report_for_group(chat_id, entries, style, target)
+        except Exception as e:
+            logger.error(f"Failed to generate report for {chat_id}: {e}")
 
-    # 4. Write creative story (DeepSeek)
-    story = _write_story(highlights, style, target)
-    logger.info(f"Story generated: {len(story)} chars")
-
-    # 5. Generate images (Gemini)
-    images = _generate_images(story, style, target)
-    logger.info(f"Generated {len(images)} images")
-
-    # 6. Save report
-    _save_report(story, highlights, style, target)
-
-    # 7. Send to groups
-    _send_report(story, images, style, target)
+    # 4. Send to any configured groups that had no messages today
+    #    (skip — no messages means no report)
 
     logger.info("=== Daily Group Report Complete ===")
 
