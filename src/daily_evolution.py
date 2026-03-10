@@ -347,6 +347,170 @@ def extract_knowledge(entries: list[dict]) -> str:
     return output
 
 
+def extract_pending_tasks(entries: list[dict], target_date: date | None = None):
+    """Extract pending tasks from today's conversations using sonnet.
+
+    Looks for: explicit commitments, unsatisfied requests, time-bound tasks.
+    Saves them via pending_tasks.add_task().
+    """
+    from src import pending_tasks
+    from src.contact_memory import ContactMemory
+    from config.settings import settings
+
+    if not entries:
+        logger.info("No entries for pending task extraction")
+        return
+
+    source_date = (target_date or date.today()).isoformat()
+    cm = ContactMemory(settings)
+
+    # Build conversation summary for sonnet
+    lines = []
+    for e in entries[:40]:
+        user_id = e.get("sender_open_id", e.get("sender_id", ""))
+        user_name = cm.get_name(user_id) if user_id else "未知"
+        chat_type = e.get("chat_type", "p2p")
+        lines.append(f"[{chat_type}] {user_name}({user_id[:10]}): {e['user_msg'][:300]}")
+        if e.get("bot_reply"):
+            lines.append(f"  Bot: {e['bot_reply'][:300]}")
+        lines.append("")
+
+    conv_text = "\n".join(lines)
+
+    prompt = (
+        "分析以下对话记录，提取需要后续跟进的任务。\n\n"
+        "提取类型：\n"
+        "1. 明确承诺（如：明天发给你、下次帮你看）\n"
+        "2. 未满足的请求（用户要求了但 bot 没能完成的）\n"
+        "3. 时间绑定任务（如：周五前、下周一）\n\n"
+        "输出 JSON 数组，每条格式：\n"
+        '{"user_id": "ou_xxx...", "user_name": "名字", "description": "任务描述", '
+        '"due_date": "YYYY-MM-DD或null", "chat_id": "oc_或ou_xxx", "chat_type": "group或p2p"}\n\n'
+        "如果没有需要跟进的任务，输出空数组: []\n\n"
+        f"对话记录:\n{conv_text}"
+    )
+
+    try:
+        output = _call_sonnet(prompt, timeout=60)
+        if not output:
+            return
+
+        # Extract JSON from output (may have markdown wrapping)
+        json_start = output.find("[")
+        json_end = output.rfind("]") + 1
+        if json_start < 0 or json_end <= json_start:
+            logger.info("No pending tasks extracted (no JSON array)")
+            return
+
+        tasks = json.loads(output[json_start:json_end])
+        if not tasks:
+            logger.info("No pending tasks extracted (empty array)")
+            return
+
+        added = 0
+        for t in tasks[:10]:  # Cap at 10 tasks per day
+            user_id = t.get("user_id", "")
+            if not user_id:
+                continue
+            pending_tasks.add_task(
+                user_id=user_id,
+                user_name=t.get("user_name", ""),
+                description=t.get("description", ""),
+                source_date=source_date,
+                chat_id=t.get("chat_id", user_id),
+                chat_type=t.get("chat_type", "p2p"),
+                due_date=t.get("due_date"),
+            )
+            added += 1
+
+        logger.info(f"Pending tasks extracted: {added} tasks")
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse pending tasks JSON: {e}")
+    except Exception as e:
+        logger.error(f"Pending task extraction failed: {e}", exc_info=True)
+
+
+def detect_and_update_patterns(entries: list[dict]):
+    """Detect behavior patterns from today's entries and update contact profiles.
+
+    No AI call — pure rule-based detection from pattern_detector.
+    """
+    from src.pattern_detector import detect_patterns_from_entries, increment_pattern
+    from src.contact_memory import ContactMemory
+    from config.settings import settings
+
+    detections = detect_patterns_from_entries(entries)
+    if not detections:
+        logger.info("No behavior patterns detected today")
+        return
+
+    cm = ContactMemory(settings)
+    updated_users = set()
+
+    for d in detections:
+        user_id = d["user_id"]
+        patterns = cm.get_patterns(user_id)
+        new_patterns = increment_pattern(
+            patterns,
+            action=d["action"],
+            trigger=d["trigger"],
+            response=d.get("response", ""),
+            context=d.get("context", ""),
+        )
+        cm.update_patterns(user_id, new_patterns)
+        updated_users.add(user_id)
+
+    logger.info(f"Patterns updated for {len(updated_users)} users: "
+                f"{len(detections)} detections")
+
+
+def detect_capability_gaps(entries: list[dict]):
+    """Detect things the bot couldn't do and log them as capability gaps.
+
+    Scans for bot replies containing "不支持"、"做不到"、"暂时无法" etc.
+    Writes gaps to vault/memory/pending-actions.md for briefing to pick up.
+    """
+    gap_phrases = [
+        "不支持", "做不到", "暂时无法", "暂不支持", "没有这个功能",
+        "目前不能", "还不能", "无法完成", "不了这个",
+    ]
+
+    gaps = []
+    for e in entries:
+        reply = e.get("bot_reply", "")
+        if not reply:
+            continue
+        for phrase in gap_phrases:
+            if phrase in reply:
+                gaps.append({
+                    "user_msg": e.get("user_msg", "")[:200],
+                    "bot_reply_snippet": reply[:200],
+                    "phrase": phrase,
+                })
+                break  # One match per entry is enough
+
+    if not gaps:
+        logger.info("No capability gaps detected today")
+        return
+
+    # Write to pending-actions.md for briefing to pick up
+    actions_file = MEMORY_DIR / "pending-actions.md"
+    today = date.today().isoformat()
+
+    lines = [f"\n## 能力缺口 [{today}]"]
+    for g in gaps[:10]:  # Cap at 10
+        lines.append(
+            f"- 用户说: {g['user_msg'][:100]}\n"
+            f"  Bot回复含「{g['phrase']}」: {g['bot_reply_snippet'][:100]}"
+        )
+
+    with open(actions_file, "a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    logger.info(f"Capability gaps logged: {len(gaps)} items")
+
+
 def _append_to_memory(filename: str, text: str):
     """Append a line to a memory file."""
     allowed = {"decisions.md", "learnings.md", "profile.md", "patterns.md"}
@@ -721,6 +885,24 @@ def run_daily_evolution(target_date: date = None):
     except Exception as e:
         failures += 1
         logger.error(f"Knowledge extraction failed: {e}", exc_info=True)
+
+    # 4. Pending task extraction (sonnet, non-fatal)
+    try:
+        extract_pending_tasks(entries, target_date)
+    except Exception as e:
+        logger.warning(f"Pending task extraction failed (non-fatal): {e}")
+
+    # 5. Pattern detection (no AI call, pure analysis)
+    try:
+        detect_and_update_patterns(entries)
+    except Exception as e:
+        logger.warning(f"Pattern detection failed (non-fatal): {e}")
+
+    # 6. Capability gap detection (sonnet, non-fatal)
+    try:
+        detect_capability_gaps(entries)
+    except Exception as e:
+        logger.warning(f"Capability gap detection failed (non-fatal): {e}")
 
     # Track evolution metrics
     try:

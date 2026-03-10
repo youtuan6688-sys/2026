@@ -1,0 +1,58 @@
+# Workflow definitions — multi-step automated actions
+#
+# Each workflow has:
+#   - trigger: conditions to match (file type, keywords, etc.)
+#   - steps: ordered list of actions to execute
+#   - Each step maps to an existing function in the codebase
+#
+# Steps with "optional: true" will be skipped on failure without aborting.
+
+workflows:
+  - name: excel_full_analysis
+    description: "完整分析 Excel 文件：解析→AI分析→图表"
+    trigger:
+      type: file_upload
+      file_types: [xlsx, xls, csv]
+      no_keywords: [拆分, 分开, 拆成]
+    steps:
+      - action: download_file
+      - action: parse_file
+      - action: ai_analyze
+      - action: generate_charts
+        optional: true
+      - action: send_results
+
+  - name: excel_split_and_send
+    description: "按列拆分 Excel 并发送"
+    trigger:
+      type: file_upload
+      file_types: [xlsx, xls, csv]
+      keywords: [拆分, 分开, 拆成, 按.*分]
+    steps:
+      - action: download_file
+      - action: detect_split_column
+      - action: split_by_column
+      - action: send_split_files
+      - action: send_summary
+
+  - name: url_save_to_kb
+    description: "保存 URL 到知识库"
+    trigger:
+      type: text
+      patterns: ["^https?://"]
+    steps:
+      - action: fetch_url
+      - action: analyze_content
+      - action: save_to_vault
+      - action: index_to_vector
+      - action: send_confirmation
+
+  - name: weekly_report
+    description: "生成周报：汇总数据→生成文档→发飞书"
+    trigger:
+      type: text
+      keywords: [周报, weekly report, 本周总结]
+    steps:
+      - action: collect_weekly_data
+      - action: ai_generate_report
+      - action: send_report

@@ -36,6 +36,7 @@ from src.router_sessions import SessionsMixin
 from src.router_docs import DocsMixin
 from src.router_files import FilesMixin
 from src.router_claude import ClaudeMixin, BUFFER_DIR
+from src.workflow_engine import WorkflowEngine
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,7 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         self.contacts = ContactMemory(settings)
         self.gate = MessageGate(max_group_workers=2)
         self.quota = QuotaTracker()
+        self.workflow_engine = WorkflowEngine()
         BUFFER_DIR.mkdir(parents=True, exist_ok=True)
         # Per-chat history: {chat_id: deque([{role, text, time, user}], maxlen=15)}
         self._histories: dict[str, deque] = {}
@@ -98,6 +100,13 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
     )
     _DOCUMENT_PATTERNS = re.compile(
         r"(文档|doc|飞书文档|创建文档|写入文档|读取文档|分享文档)"
+    )
+    _TASK_DONE_PATTERNS = re.compile(
+        r"^(搞定了|完成了|做完了|弄好了|ok了|已完成|done|不用了|算了|取消吧)\s*$",
+        re.IGNORECASE,
+    )
+    _DISABLE_PATTERN_RE = re.compile(
+        r"(不要自动|关闭自动|别自动|停止自动)(分析|拆分|处理|执行|回复)",
     )
 
     def _classify_intent(self, text: str) -> str:
@@ -179,6 +188,23 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
 
         # Update contact memory (track last_seen, message_count)
         self.contacts.touch(user_id)
+
+        # ── Pending task completion detection ──
+        if self._TASK_DONE_PATTERNS.match(stripped):
+            if self._try_complete_pending_task(user_id, stripped, sender_id):
+                return
+
+        # ── Pattern disable detection ──
+        disable_match = self._DISABLE_PATTERN_RE.search(stripped)
+        if disable_match:
+            action_map = {
+                "分析": "excel_auto_analyze",
+                "拆分": "file_split_preference",
+            }
+            action = action_map.get(disable_match.group(2), disable_match.group(2))
+            self.contacts.disable_pattern(user_id, action=action)
+            self.sender.send_text(sender_id, f"好的，已关闭自动{disable_match.group(2)} ✅")
+            return
 
         # ── Group chat: block admin commands ──
         if is_group:
@@ -362,3 +388,50 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         # Default: Claude Code with RAG + memory + history
         self._add_turn("user", stripped, chat_id=sender_id)
         self._execute_claude(stripped, sender_id)
+
+    # ── Pending Task Completion ──
+
+    def _try_complete_pending_task(self, user_id: str, text: str,
+                                    sender_id: str) -> bool:
+        """Check if user is confirming a pending task completion.
+
+        Returns True if a task was matched and handled.
+        """
+        from src import pending_tasks
+
+        user_tasks = pending_tasks.get_user_pending(user_id)
+        if not user_tasks:
+            return False
+
+        # Determine action: done or dismissed
+        dismiss_words = {"不用了", "算了", "取消吧"}
+        is_dismiss = text.strip() in dismiss_words
+
+        # If user has exactly one pending task, auto-match it
+        if len(user_tasks) == 1:
+            task = user_tasks[0]
+            if is_dismiss:
+                pending_tasks.mark_dismissed(task["task_id"])
+                self.sender.send_text(sender_id, f"好的，已取消跟进：{task['description']}")
+            else:
+                pending_tasks.mark_done(task["task_id"])
+                self.sender.send_text(sender_id, f"👍 已标记完成：{task['description']}")
+            return True
+
+        # Multiple tasks: mark the most recent one (last reminded or last created)
+        # Sort by reminded_at desc, then created_at desc
+        sorted_tasks = sorted(
+            user_tasks,
+            key=lambda t: t.get("reminded_at") or t.get("created_at", ""),
+            reverse=True,
+        )
+        task = sorted_tasks[0]
+        if is_dismiss:
+            pending_tasks.mark_dismissed(task["task_id"])
+            self.sender.send_text(sender_id, f"好的，已取消跟进：{task['description']}")
+        else:
+            pending_tasks.mark_done(task["task_id"])
+            remaining = len(user_tasks) - 1
+            extra = f"\n（还有 {remaining} 条待跟进）" if remaining > 0 else ""
+            self.sender.send_text(sender_id, f"👍 已标记完成：{task['description']}{extra}")
+        return True

@@ -348,9 +348,34 @@ class ContextMixin:
 
         return "\n\n---\n\n".join(parts)
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, user_id: str = "") -> str:
         """Build static system prompt for --append-system-prompt."""
-        return self._load_memory_context()
+        parts = [self._load_memory_context()]
+
+        # Inject pending tasks for this user
+        if user_id:
+            tasks_context = self._get_pending_tasks_context(user_id)
+            if tasks_context:
+                parts.append(tasks_context)
+
+        return "\n\n".join(p for p in parts if p)
+
+    @staticmethod
+    def _get_pending_tasks_context(user_id: str) -> str:
+        """Load pending tasks for a user to inject into context."""
+        try:
+            from src import pending_tasks
+            user_tasks = pending_tasks.get_user_pending(user_id)
+            if not user_tasks:
+                return ""
+            lines = ["该用户有以下待跟进事项："]
+            for t in user_tasks[:5]:
+                due = f" (截止: {t['due_date']})" if t.get("due_date") else ""
+                lines.append(f"- {t['description']}{due} (来自 {t['source_date']})")
+            lines.append("如果对话涉及这些事项，主动询问进展。")
+            return "\n".join(lines)
+        except Exception:
+            return ""
 
     # ── Group Chat: 小叼毛 Persona ──
 

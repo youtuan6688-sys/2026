@@ -67,6 +67,7 @@ class ContactMemory:
             "preferences": [],
             "topics": [],
             "notes": [],
+            "patterns": [],
         }
         self.save(open_id, profile)
         logger.info(f"New contact created: {name} ({open_id})")
@@ -143,6 +144,26 @@ class ContactMemory:
         if changed:
             self.save(open_id, profile)
             logger.info(f"Contact updated: {profile.get('name')} - {extracted}")
+
+    def get_patterns(self, open_id: str) -> list[dict]:
+        """Get behavior patterns for a user."""
+        profile = self.load(open_id)
+        return profile.get("patterns", [])
+
+    def update_patterns(self, open_id: str, patterns: list[dict]):
+        """Replace patterns for a user."""
+        profile = self.load(open_id)
+        profile["patterns"] = patterns
+        self.save(open_id, profile)
+
+    def disable_pattern(self, open_id: str, action: str = "",
+                         pattern_id: str = ""):
+        """Disable a specific pattern for a user."""
+        from src.pattern_detector import disable_pattern
+        patterns = self.get_patterns(open_id)
+        updated = disable_pattern(patterns, action=action,
+                                   pattern_id=pattern_id)
+        self.update_patterns(open_id, updated)
 
     def _log_path(self, open_id: str) -> Path:
         return CONTACTS_DIR / f"{open_id}_log.md"

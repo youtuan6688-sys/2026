@@ -125,7 +125,7 @@ class ClaudeMixin:
                 from scripts.claude_runner import run_with_resume
 
                 full_prompt = self._build_full_prompt(prompt, chat_id=sender_id)
-                system_prompt = self._build_system_prompt()
+                system_prompt = self._build_system_prompt(user_id=sender_id)
                 task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
                 success, output = run_with_resume(
@@ -165,7 +165,7 @@ class ClaudeMixin:
             from scripts.claude_runner import run_with_resume
 
             full_prompt = self._build_full_prompt(prompt)
-            system_prompt = self._build_system_prompt()
+            system_prompt = self._build_system_prompt(user_id=sender_id)
             task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
             success, output = run_with_resume(

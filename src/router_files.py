@@ -56,7 +56,21 @@ class FilesMixin:
         self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
 
         if file_name and file_handler.is_supported(file_name):
-            self._analyze_file(sender_id, msg_type, file_name, file_key, message_id, chat_type)
+            # Check if user has an auto-act pattern for this file type
+            auto_prompt = self._check_auto_pattern(user_id, file_name)
+
+            # Log workflow match (engine ready for future step execution)
+            try:
+                wf = self.workflow_engine.match_file(file_name, auto_prompt)
+                if wf:
+                    logger.info(
+                        f"Workflow matched: {wf['name']} for {file_name}"
+                    )
+            except Exception:
+                pass
+
+            self._analyze_file(sender_id, msg_type, file_name, file_key,
+                               message_id, chat_type, user_prompt=auto_prompt)
         else:
             type_labels = {"file": "文件", "image": "图片", "audio": "语音", "video": "视频", "media": "媒体"}
             label = type_labels.get(msg_type, msg_type)
@@ -89,6 +103,29 @@ class FilesMixin:
             log_file.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception as e:
             logger.error(f"Failed to log file request: {e}", exc_info=True)
+
+    def _check_auto_pattern(self, user_id: str, file_name: str) -> str:
+        """Check if user has an auto-act pattern for this file type.
+
+        Returns auto-generated prompt string, or empty string.
+        """
+        try:
+            from src.pattern_detector import should_auto_act, EXCEL_AUTO_ANALYZE
+            ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+            if ext not in ("xlsx", "xls", "csv"):
+                return ""
+
+            patterns = self.contacts.get_patterns(user_id)
+            match = should_auto_act(patterns, "excel_upload")
+            if match:
+                logger.info(
+                    f"Auto-pattern triggered for {user_id}: "
+                    f"{match['action']} (count={match.get('count', 0)})"
+                )
+                return "帮我分析这个文件"
+        except Exception as e:
+            logger.debug(f"Auto-pattern check failed: {e}")
+        return ""
 
     def _analyze_file(self, sender_id: str, msg_type: str, file_name: str,
                        file_key: str, message_id: str, chat_type: str,
