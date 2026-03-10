@@ -103,8 +103,12 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         r"(会话|session|运行中|停止.*会话|查看.*输出|后台.*任务)"
     )
     _DOCUMENT_PATTERNS = re.compile(
-        r"(文档|doc|飞书文档|创建文档|写入文档|读取文档|分享文档|"
-        r"多维表格|bitable|数据表|电子表格|spreadsheet|表格)"
+        r"(创建文档|写入文档|读取文档|分享文档|打开文档|编辑文档|操作文档|"
+        r"文档操作|列.*云文档|"
+        r"创建.*多维表格|操作.*多维表格|多维表格.{0,6}(记录|数据|查看|读取)|bitable|"
+        r"创建.*电子表格|操作.*电子表格|电子表格.{0,6}(数据|查看|读取)|spreadsheet|"
+        r"/doc\b|/sheets?\b|"
+        r"feishu\.cn/(?:docx|docs|wiki|sheets|base)/[A-Za-z0-9])"
     )
     _TASK_DONE_PATTERNS = re.compile(
         r"^(搞定了|完成了|做完了|弄好了|ok了|已完成|done|不用了|算了|取消吧)\s*$",

@@ -429,5 +429,12 @@ class DocsMixin:
                 "或输入 /doc help 查看完整命令。",
             )
         except Exception as e:
+            err_msg = str(e).lower()
+            if "timeout" in err_msg or "rate" in err_msg or "limit" in err_msg:
+                # Haiku timed out or rate-limited — fall back to general Claude handler
+                logger.warning(f"Doc handler fallback to Claude: {e}")
+                self._add_turn("user", text, chat_id=sender_id)
+                self._execute_claude(text, sender_id)
+                return
             logger.error(f"Natural doc handling error: {e}")
             self.sender.send_text(sender_id, f"文档操作出错了: {e}")
