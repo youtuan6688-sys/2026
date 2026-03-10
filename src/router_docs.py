@@ -93,11 +93,14 @@ class DocsMixin:
         """Handle natural language document requests via haiku."""
         prompt = (
             "用户想操作飞书在线文档。根据消息判断操作，只输出一行 JSON：\n"
+            '- 询问能力/帮助: {"action":"inquiry"}\n'
             '- 读取: {"action":"read","target":"文档链接或ID"}\n'
             '- 创建: {"action":"create","title":"文档标题","content":"可选内容"}\n'
             '- 写入: {"action":"write","target":"文档链接或ID","content":"要写的内容"}\n'
             '- 创建并写入: {"action":"create_write","title":"标题","content":"内容"}\n'
-            '- 分享: {"action":"share","target":"文档链接或ID","member":"邮箱或open_id"}\n\n'
+            '- 分享: {"action":"share","target":"文档链接或ID","member":"邮箱或open_id"}\n'
+            '- 列表: {"action":"list","folder":"文件夹token或空"}\n\n'
+            "注意：如果用户只是在询问你能不能操作文档、有什么文档能力，选 inquiry。\n\n"
             f"消息: {text}"
         )
         try:
@@ -106,6 +109,38 @@ class DocsMixin:
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             parsed = json.loads(raw)
             action = parsed.get("action", "")
+
+            if action == "inquiry":
+                self.sender.send_text(
+                    sender_id,
+                    "可以的！我目前支持以下飞书云文档操作：\n\n"
+                    "📄 文档 (docx)\n"
+                    "• 创建文档 — 「帮我创建一个叫XX的文档」\n"
+                    "• 读取文档 — 「读一下这个文档 <链接>」\n"
+                    "• 写入内容 — 「往XX文档里写入...」\n"
+                    "• 分享文档 — 「把这个文档分享给XX」\n\n"
+                    "📋 多维表格 (bitable)\n"
+                    "• 暂不支持直接操作，后续可以加\n\n"
+                    "📊 电子表格 (sheet)\n"
+                    "• 暂不支持直接操作\n\n"
+                    "📁 文件夹\n"
+                    "• 列出文件 — 「列一下云文档」或 /doc list\n\n"
+                    "你可以直接用自然语言告诉我要做什么，也可以用命令 /doc help 查看完整用法。",
+                )
+                return
+
+            if action == "list":
+                folder = parsed.get("folder", "")
+                files = self.doc_manager.list_folder(folder)
+                if not files:
+                    self.sender.send_text(sender_id, "文件夹为空或无权访问")
+                    return
+                type_icons = {"docx": "📄", "sheet": "📊", "bitable": "📋", "folder": "📁"}
+                lines = [f"{type_icons.get(f['type'], '📎')} {f['name']} ({f['type']})" +
+                         (f"\n   {f['url']}" if f['url'] else f"\n   token: {f['token']}")
+                         for f in files]
+                self._send_long_text(sender_id, f"云文档清单 ({len(files)} 个):\n\n" + "\n".join(lines))
+                return
 
             if action == "read":
                 target = parsed.get("target", "")
@@ -174,6 +209,19 @@ class DocsMixin:
             else:
                 self.sender.send_text(sender_id, "没理解你的文档操作，试试: /doc help")
 
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"Natural doc parse failed: {e}")
+            # Fallback: treat as inquiry
+            self.sender.send_text(
+                sender_id,
+                "我支持飞书云文档操作（创建/读取/写入/分享），"
+                "但没理解你具体要做什么。\n\n"
+                "你可以这样说：\n"
+                "• 「帮我创建一个叫XX的文档」\n"
+                "• 「读一下这个文档 <链接>」\n"
+                "• 「列一下云文档」\n\n"
+                "或输入 /doc help 查看完整命令。",
+            )
         except Exception as e:
-            logger.warning(f"Natural doc handling failed: {e}")
-            self.sender.send_text(sender_id, f"文档操作解析失败，试试命令: /doc help")
+            logger.error(f"Natural doc handling error: {e}")
+            self.sender.send_text(sender_id, f"文档操作出错了: {e}")
