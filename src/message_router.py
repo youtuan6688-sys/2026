@@ -26,6 +26,7 @@ from src.quota_tracker import QuotaTracker
 from src import tmux_manager
 from src import task_scheduler
 from src import file_handler
+from src import stock_query
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +456,9 @@ class MessageRouter:
                     "小叼毛在线，随时待命。有啥活儿尽管吩咐 🫡",
                 )
                 return
+            if stripped.startswith("/stock"):
+                self._handle_stock_query(stripped, sender_id)
+                return
 
             # Group: URL → save to knowledge base (same as private)
             urls = extract_urls(text)
@@ -507,6 +511,9 @@ class MessageRouter:
         # ══════════════════════════════════════
 
         # Explicit commands always take priority
+        if stripped.startswith("/stock"):
+            self._handle_stock_query(stripped, sender_id)
+            return
         if stripped.startswith("/remember ") or stripped.startswith("/r "):
             self._save_memory(stripped.split(" ", 1)[1].strip(), sender_id)
             return
@@ -1609,16 +1616,40 @@ class MessageRouter:
 
         return True
 
+    def _handle_stock_query(self, text: str, sender_id: str):
+        """Handle /stock command for stock data queries."""
+        parts = text.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip():
+            self.sender.send_text(
+                sender_id,
+                "用法：/stock <代码或名称>\n"
+                "例如：/stock 002384、/stock 东山精密、/stock 01810",
+            )
+            return
+
+        query = parts[1].strip()
+        self.sender.send_text(sender_id, f"查询 {query} 中... 📈")
+
+        try:
+            result = stock_query.query_stock(query)
+            self.sender.send_text(sender_id, result)
+        except Exception as e:
+            logger.error(f"Stock query error: {e}", exc_info=True)
+            self.sender.send_text(sender_id, f"查询出错了: {e}")
+
     def _show_group_help(self, sender_id: str):
         self.sender.send_text(
             sender_id,
             "yo，小叼毛在此 🫡 能帮你干这些活儿：\n\n"
             "直接 @我 说话 — 聊天、问问题、写文案、翻译、头脑风暴\n"
+            "/stock <代码/名称> — 查股票行情（A股+港股）\n"
             "/search <关键词> — 搜知识库\n"
             "/doc read <链接> — 读飞书文档\n"
             "/doc create <标题> — 创建飞书文档\n"
             "/kb — 知识库统计\n"
+            "发文件 — Excel/CSV/PDF/图片自动分析\n"
             "发链接 — 自动解析保存\n\n"
+            "⚠️ 定时监控类任务需管理员审批\n"
             "其他骚操作？私聊老板去，我在群里权限有限 😏",
         )
 
