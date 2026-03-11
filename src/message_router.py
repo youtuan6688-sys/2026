@@ -15,7 +15,7 @@ import re
 from collections import deque
 from pathlib import Path
 
-from src.utils.url_utils import extract_urls
+from src.utils.url_utils import extract_urls, detect_music_platform
 from src.utils.error_tracker import ErrorTracker
 from src.checkpoint import CheckpointManager
 from src.ai.analyzer import AIAnalyzer
@@ -77,6 +77,15 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         self._load_histories()
         self._phase_log = self._load_phase_log()
         self._interaction_count = 0
+        self._music_handler = None
+
+    # ── Music Handler (lazy init) ──
+
+    def _get_music_handler(self):
+        if self._music_handler is None:
+            from src.music.handler import MusicHandler
+            self._music_handler = MusicHandler(self.sender)
+        return self._music_handler
 
     # ── Intent Classification (rule-based, no subprocess) ──
 
@@ -316,10 +325,17 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
                 self._handle_stock_query(stripped, sender_id)
                 return
 
-            # Group: URL → save to knowledge base
+            # Group: URL → check for music links first, then save to knowledge base
             urls = extract_urls(text)
             if urls:
+                remaining_urls = []
                 for url in urls:
+                    music_platform = detect_music_platform(url)
+                    if music_platform:
+                        self._get_music_handler().handle_music_url(url, music_platform, sender_id)
+                    else:
+                        remaining_urls.append(url)
+                for url in remaining_urls:
                     try:
                         self._process_url(url, sender_id)
                     except Exception as e:
@@ -422,9 +438,33 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             self._handle_doc(stripped, sender_id)
             return
 
+        # Music command: /music <subcommand>
+        if stripped.startswith("/music"):
+            self._get_music_handler().handle_command(stripped, sender_id)
+            return
+
         # URL mode: if message contains URLs, save them
         urls = extract_urls(text)
         if urls:
+            # Intercept music URLs first
+            music_urls = []
+            non_music_urls = []
+            for url in urls:
+                music_platform = detect_music_platform(url)
+                if music_platform:
+                    music_urls.append((url, music_platform))
+                else:
+                    non_music_urls.append(url)
+
+            # Process music URLs
+            for url, platform in music_urls:
+                self._get_music_handler().handle_music_url(url, platform, sender_id)
+
+            # If only music URLs, we're done (song name/platform text is not instructions)
+            if not non_music_urls:
+                return
+
+            # Process remaining non-music URLs as before
             # Check if there's extra text beyond the URLs (instructions)
             text_without_urls = stripped
             for url in urls:
@@ -432,7 +472,7 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             has_instructions = len(text_without_urls) > 5
 
             saved_titles = []
-            for url in urls:
+            for url in non_music_urls:
                 try:
                     title = self._process_url(url, sender_id)
                     if title:
@@ -443,7 +483,7 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
                     self.sender.send_error(sender_id, url, str(e)[:200])
             if saved_titles:
                 summary = "、".join(saved_titles[:3])
-                url_list = " ".join(urls[:3])
+                url_list = " ".join(non_music_urls[:3])
                 self._add_turn("user", f"[发送了链接] {url_list} → {summary}", chat_id=sender_id)
                 self._add_turn("assistant", f"已保存到知识库: {summary}", chat_id=sender_id)
 

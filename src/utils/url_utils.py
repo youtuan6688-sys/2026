@@ -9,6 +9,20 @@ PLATFORM_PATTERNS = {
     "feishu": [r"feishu\.cn", r"larksuite\.com"],
 }
 
+# Music platform URL patterns
+MUSIC_PLATFORM_PATTERNS = {
+    "youtube_music": [r"music\.youtube\.com"],
+    "youtube": [r"youtube\.com/watch", r"youtu\.be/"],
+    "qqmusic": [r"y\.qq\.com", r"c\.y\.qq\.com", r"i\.y\.qq\.com", r"c6\.y\.qq\.com"],
+    "netease": [r"music\.163\.com", r"163cn\.tv/"],
+    "bilibili": [r"bilibili\.com/audio", r"b23\.tv/"],
+    "spotify": [r"open\.spotify\.com", r"spotify\.link/"],
+    "apple_music": [r"music\.apple\.com"],
+    "kugou": [r"kugou\.com", r"t1\.kugou\.com"],
+    "kuwo": [r"kuwo\.cn"],
+    "qishui": [r"qishui\.douyin\.com"],
+}
+
 URL_REGEX = re.compile(r'https?://[^\s<>"{}|\\^`\[\]]+')
 
 
@@ -42,6 +56,17 @@ def detect_platform(url: str) -> str:
         if any(re.search(p, url) for p in patterns):
             return platform
     return "generic"
+
+
+def detect_music_platform(url: str) -> str | None:
+    """Detect if a URL is a music platform link.
+
+    Returns the platform key (e.g. 'youtube_music', 'qqmusic') or None.
+    """
+    for platform, patterns in MUSIC_PLATFORM_PATTERNS.items():
+        if any(re.search(p, url) for p in patterns):
+            return platform
+    return None
 
 
 def normalize_url(url: str) -> str:
