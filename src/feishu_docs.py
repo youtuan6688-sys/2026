@@ -129,10 +129,26 @@ class FeishuDocManager:
             logger.error(f"Failed to list blocks for {doc_id}: {list_resp.msg}")
             return {"title": title, "content": "", "doc_id": doc_id}
 
-        # Extract text from blocks
+        # Build block_id → block map for table cell lookups
+        all_blocks = list_resp.data.items or []
+        block_map = {}
+        table_child_ids = set()
+        for block in all_blocks:
+            bid = getattr(block, "block_id", None)
+            if bid:
+                block_map[bid] = block
+            # Mark table/table_cell children so we skip them in the top-level loop
+            if block.block_type in (18, 19):  # table or table_cell
+                for child_id in (block.children or []):
+                    table_child_ids.add(child_id)
+
+        # Extract text from top-level blocks (skip blocks nested inside tables)
         text_parts = []
-        for block in (list_resp.data.items or []):
-            block_text = self._extract_block_text(block)
+        for block in all_blocks:
+            bid = getattr(block, "block_id", None)
+            if bid and bid in table_child_ids:
+                continue  # handled by table extraction
+            block_text = self._extract_block_text(block, block_map=block_map)
             if block_text:
                 text_parts.append(block_text)
 
@@ -323,6 +339,56 @@ class FeishuDocManager:
         logger.info(f"Downloaded image {file_token} → {save_path}")
         return str(save_path)
 
+    def _extract_table(self, table_block, block_map: dict) -> str:
+        """Extract a table block as a markdown table.
+
+        Feishu tables are nested: table → table_cells → text blocks.
+        The cells list in table.property gives row_size × column_size layout.
+        """
+        tbl = getattr(table_block, "table", None)
+        prop = getattr(tbl, "property", None) if tbl else None
+        if not prop:
+            return ""
+
+        rows = getattr(prop, "row_size", 0) or 0
+        cols = getattr(prop, "column_size", 0) or 0
+        if rows == 0 or cols == 0:
+            return ""
+
+        # Get ordered list of cell block IDs
+        cell_ids = tbl.cells or []
+        # cells is a flat list in row-major order: [r0c0, r0c1, ..., r1c0, ...]
+
+        def _cell_text(cell_id: str) -> str:
+            cell_block = block_map.get(cell_id)
+            if not cell_block:
+                return ""
+            # Table cell's children are text/paragraph blocks
+            parts = []
+            for child_id in (cell_block.children or []):
+                child = block_map.get(child_id)
+                if child:
+                    txt = self._extract_block_text(child)
+                    if txt:
+                        parts.append(txt)
+            return " ".join(parts).replace("|", "\\|")
+
+        # Build markdown table
+        md_rows = []
+        for r in range(rows):
+            row_cells = []
+            for c in range(cols):
+                idx = r * cols + c
+                text = _cell_text(cell_ids[idx]) if idx < len(cell_ids) else ""
+                row_cells.append(text)
+            md_rows.append("| " + " | ".join(row_cells) + " |")
+
+            # Add header separator after first row
+            if r == 0:
+                md_rows.append("| " + " | ".join(["---"] * cols) + " |")
+
+        return "\n".join(md_rows)
+
     @staticmethod
     def _extract_elements(obj) -> str:
         """Extract text from a block's elements list."""
@@ -334,13 +400,17 @@ class FeishuDocManager:
                 parts.append(elem.text_run.content or "")
         return "".join(parts)
 
-    def _extract_block_text(self, block) -> str:
+    def _extract_block_text(self, block, block_map: dict | None = None) -> str:
         """Extract text content from a document block."""
         block_type = block.block_type
         extract = self._extract_elements
 
         def _safe_attr(name: str):
             return getattr(block, name, None)
+
+        # Table (type 18) — reconstruct as markdown table
+        if block_type == 18 and block_map:
+            return self._extract_table(block, block_map)
 
         # Text/Paragraph (type 2)
         if block_type == 2:
