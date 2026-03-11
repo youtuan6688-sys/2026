@@ -84,7 +84,11 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         r"(记住|记一下|以后|别忘|偏好|习惯|规则|设置.*(?:为|成)|记得)"
     )
     _TODO_PATTERNS = re.compile(
-        r"(待办|todo|任务|提醒我|加个|添加.*任务|完成.*任务|清单)"
+        r"(提醒我.{2,}|加个.{2,}|添加.*任务|完成.*任务)"
+    )
+    # Questions about todos should NOT create new todos
+    _TODO_QUERY_PATTERNS = re.compile(
+        r"(还有.{0,4}(待办|任务|代办)|待办.*吗|任务.*呢|有.*任务吗|清单.*呢)"
     )
     _LOOP_PATTERNS = re.compile(
         r"(定时|循环|每隔|loop|cron|定期|巡检|监控.*(?:启动|停止|状态))"
@@ -123,6 +127,9 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         t = text[:200].lower()
         if self._REMEMBER_PATTERNS.search(t):
             return "remember"
+        # Questions about todos → query (not create)
+        if self._TODO_QUERY_PATTERNS.search(t):
+            return "query"
         if self._TODO_PATTERNS.search(t):
             return "todo"
         if self._LOOP_PATTERNS.search(t):
