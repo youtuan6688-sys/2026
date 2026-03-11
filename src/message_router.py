@@ -81,7 +81,14 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
     # ── Intent Classification (rule-based, no subprocess) ──
 
     _REMEMBER_PATTERNS = re.compile(
-        r"(记住|记一下|以后|别忘|偏好|习惯|规则|设置.*(?:为|成)|记得)"
+        r"(记住.{0,4}(?:这|我|以后|偏好|习惯|规则)|"
+        r"记一下|别忘了?|帮我记|"
+        r"(?:偏好|习惯|规则).*(?:设|改|调)|设置.*(?:为|成))"
+    )
+    # If message looks like a task with instructions, don't classify as remember
+    # Note: "帮我记" is excluded — it's a remember intent, not a task
+    _TASK_SIGNAL_PATTERNS = re.compile(
+        r"(希望你|帮我[^记]|请你|你来|你去|你帮|做一下|做完|执行|分析|学习.*了解|结合)"
     )
     _TODO_PATTERNS = re.compile(
         r"(提醒我.{2,}|加个.{2,}|添加.*任务|完成.*任务)"
@@ -125,8 +132,11 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
     def _classify_intent(self, text: str) -> str:
         """Classify user intent using keyword rules (no subprocess call)."""
         t = text[:200].lower()
+        # Remember only if no task signals — long messages with instructions
+        # like "学习了解，结合你做的..." should go to Claude, not memory
         if self._REMEMBER_PATTERNS.search(t):
-            return "remember"
+            if not self._TASK_SIGNAL_PATTERNS.search(t):
+                return "remember"
         # Questions about todos → query (not create)
         if self._TODO_QUERY_PATTERNS.search(t):
             return "query"
