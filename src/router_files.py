@@ -389,7 +389,45 @@ class FilesMixin:
                             texts.append(element.get("text", ""))
             return " ".join(texts)
 
+        if msg_type == "interactive":
+            return self._extract_card_text(content)
+
         return ""
+
+    @staticmethod
+    def _extract_card_text(card: dict) -> str:
+        """Extract readable text from an interactive card message."""
+        parts = []
+
+        # Header title
+        header = card.get("header", {})
+        title = header.get("title", {})
+        if isinstance(title, dict):
+            parts.append(title.get("content", ""))
+        elif isinstance(title, str):
+            parts.append(title)
+
+        # Elements: markdown content, plain text, button URLs
+        for elem in card.get("elements", []):
+            tag = elem.get("tag", "")
+            if tag == "markdown":
+                parts.append(elem.get("content", ""))
+            elif tag == "div":
+                # div may contain text or fields
+                text_obj = elem.get("text", {})
+                if isinstance(text_obj, dict):
+                    parts.append(text_obj.get("content", ""))
+                for field in elem.get("fields", []):
+                    field_text = field.get("text", {})
+                    if isinstance(field_text, dict):
+                        parts.append(field_text.get("content", ""))
+            elif tag == "action":
+                for action in elem.get("actions", []):
+                    url = action.get("url", "")
+                    if url:
+                        parts.append(f"链接: {url}")
+
+        return "\n".join(p for p in parts if p)
 
     def _handle_quoted_file(self, sender_id: str, user_text: str,
                              parent_id: str, chat_type: str,

@@ -215,10 +215,29 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             # Not a file quote — try to extract quoted text for context
             quoted_text = self._extract_quoted_text(parent_id)
             if quoted_text:
-                enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
                 logger.info(f"Quoted text prepended: {quoted_text[:80]}")
-                # Quoted messages with URLs or complex context → full Claude execution
-                # Skip simple intent classification which misroutes these
+
+                # Check if quoted text contains URLs — fetch content first
+                quoted_urls = extract_urls(quoted_text)
+                fetched_context = ""
+                if quoted_urls:
+                    for qurl in quoted_urls[:1]:  # Process first URL only
+                        try:
+                            article = self._fetch_url_as_context(qurl)
+                            if article:
+                                fetched_context = article
+                        except Exception as e:
+                            logger.warning(f"Failed to fetch quoted URL {qurl}: {e}")
+
+                if fetched_context:
+                    enriched = (
+                        f"[引用消息中的文章内容]\n{fetched_context}\n\n"
+                        f"用户问题: {stripped}"
+                    )
+                else:
+                    enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
+
+                # Quoted messages → full Claude execution
                 user_id = sender_open_id or sender_id
                 self.contacts.touch(user_id)
                 self._add_turn("user", enriched[:500], chat_id=sender_id)

@@ -237,6 +237,34 @@ class ClaudeMixin:
         )
         return parsed.title
 
+    def _fetch_url_as_context(self, url: str) -> str:
+        """Fetch URL content for use as Claude context (no save/analyze).
+
+        Returns extracted text (title + content), or empty string on failure.
+        Used when user quotes a message containing a URL and asks a question about it.
+        """
+        platform = detect_platform(url)
+
+        # Feishu docs: use API
+        if platform == "feishu" and self._is_feishu_doc_url(url):
+            doc = self.doc_manager.read_document(url)
+            if doc and doc.get("content"):
+                title = doc.get("title", "")
+                return f"标题: {title}\n\n{doc['content'][:5000]}"
+            return ""
+
+        # Other URLs: use parser
+        parser = get_parser(platform)
+        try:
+            parsed = parser.parse(url)
+            if parsed.content or parsed.title:
+                title = parsed.title or ""
+                content = parsed.content or ""
+                return f"标题: {title}\n\n{content[:5000]}"
+        except Exception as e:
+            logger.warning(f"Failed to parse URL for context: {url}: {e}")
+        return ""
+
     @staticmethod
     def _is_feishu_doc_url(url: str) -> bool:
         """Check if URL is a Feishu online document (docx/wiki/docs)."""
