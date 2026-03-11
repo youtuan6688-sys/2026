@@ -281,7 +281,11 @@ class ClaudeMixin:
             platform="feishu",
             title=title,
             content=content,
-            metadata={"doc_id": doc["doc_id"], "source": "feishu_doc"},
+            metadata={
+                "doc_id": doc["doc_id"],
+                "source": "feishu_doc",
+                "has_images": "[IMAGE:" in content,
+            },
         )
 
         analyzed = self.ai_analyzer.analyze(parsed)

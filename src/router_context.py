@@ -374,6 +374,15 @@ class ContextMixin:
         parts = []
         parts.append(f"# 用户指令（最高优先级）\n{prompt}")
 
+        # If prompt contains image markers, instruct Claude to preserve them
+        if "[IMAGE:" in prompt:
+            parts.append(
+                "# 图片保留规则\n"
+                "文档中的 [IMAGE:xxx] 标记代表原始图片，在优化/改写文档时，"
+                "必须保留这些标记在适当位置，不要删除或修改它们。"
+                "写入文档时这些标记会自动还原为图片。"
+            )
+
         history = self._format_history(chat_id=chat_id)
         if history:
             parts.append(history)

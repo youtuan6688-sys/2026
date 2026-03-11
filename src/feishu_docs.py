@@ -18,6 +18,7 @@ from lark_oapi.api.docx.v1 import (
     Text,
     TextElement,
     TextRun,
+    Image as DocImage,
     CreateDocumentRequest,
     CreateDocumentRequestBody,
     GetDocumentRequest,
@@ -29,9 +30,15 @@ from lark_oapi.api.drive.v1 import (
     CreatePermissionMemberRequest,
     BaseMember,
     ListFileRequest,
+    DownloadMediaRequest,
 )
 
+from pathlib import Path
+
 from config.settings import Settings
+
+# Image placeholder pattern: [IMAGE:file_token]
+_IMAGE_MARKER_RE = re.compile(r'\[IMAGE:([^\]]+)\]')
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +143,9 @@ class FeishuDocManager:
     def write_content(self, url_or_id: str, text: str) -> bool:
         """Append text content to an existing document.
 
-        Splits text into paragraphs and adds them as Block objects
-        using the SDK builder (not raw dicts).
+        Splits text into paragraphs and adds them as Block objects.
+        Supports [IMAGE:file_token] markers — these are converted to
+        image blocks so images are preserved during document rewrites.
         """
         doc_id = self.extract_doc_id(url_or_id)
 
@@ -153,17 +161,7 @@ class FeishuDocManager:
             batch = paragraphs[batch_start:batch_start + batch_size]
             blocks = []
             for para in batch:
-                block = Block.builder() \
-                    .block_type(2) \
-                    .text(
-                        Text.builder().elements([
-                            TextElement.builder().text_run(
-                                TextRun.builder()
-                                .content(para[:2000])
-                                .build()
-                            ).build()
-                        ]).build()
-                    ).build()
+                block = self._para_to_block(para)
                 blocks.append(block)
 
             body = CreateDocumentBlockChildrenRequestBody.builder() \
@@ -191,6 +189,32 @@ class FeishuDocManager:
 
         logger.info(f"Wrote {total_written} blocks to document {doc_id}")
         return True
+
+    @staticmethod
+    def _para_to_block(para: str) -> Block:
+        """Convert a paragraph string to a Block, handling image markers."""
+        # Image marker: [IMAGE:file_token]
+        m = _IMAGE_MARKER_RE.fullmatch(para.strip())
+        if m:
+            file_token = m.group(1)
+            return Block.builder() \
+                .block_type(27) \
+                .image(
+                    DocImage.builder().token(file_token).build()
+                ).build()
+
+        # Default: text paragraph
+        return Block.builder() \
+            .block_type(2) \
+            .text(
+                Text.builder().elements([
+                    TextElement.builder().text_run(
+                        TextRun.builder()
+                        .content(para[:2000])
+                        .build()
+                    ).build()
+                ]).build()
+            ).build()
 
     def create_and_write(self, title: str, content: str,
                          folder_token: str = "") -> dict | None:
@@ -277,6 +301,28 @@ class FeishuDocManager:
         logger.info(f"Listed {len(results)} files in folder {folder_token or 'root'}")
         return results
 
+    def download_image(self, file_token: str, save_dir: str = "/tmp") -> str | None:
+        """Download an image from a Feishu document by its file_token.
+
+        Returns the local file path, or None on failure.
+        Used for Strategy B: on-demand image analysis by Claude.
+        """
+        req = DownloadMediaRequest.builder() \
+            .file_token(file_token) \
+            .build()
+        resp = self.client.drive.v1.media.download(req)
+
+        if not resp.success():
+            logger.error(f"Failed to download image {file_token}: "
+                         f"code={resp.code}, msg={resp.msg}")
+            return None
+
+        save_path = Path(save_dir) / f"{file_token}.png"
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(resp.file.read())
+        logger.info(f"Downloaded image {file_token} → {save_path}")
+        return str(save_path)
+
     @staticmethod
     def _extract_elements(obj) -> str:
         """Extract text from a block's elements list."""
@@ -335,5 +381,20 @@ class FeishuDocManager:
         # Callout (type 26)
         if block_type == 26:
             return extract(_safe_attr("callout"))
+
+        # Image (type 27)
+        if block_type == 27:
+            img = _safe_attr("image")
+            if img:
+                token = getattr(img, "token", "") or ""
+                return f"[IMAGE:{token}]" if token else "[IMAGE]"
+            return "[IMAGE]"
+
+        # File (type 28)
+        if block_type == 28:
+            f = _safe_attr("file")
+            if f:
+                name = getattr(f, "name", "") or ""
+                return f"[FILE:{name}]" if name else "[FILE]"
 
         return ""
