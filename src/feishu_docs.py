@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 class FeishuDocManager:
     """Manage Feishu online documents for the bot."""
 
+    # Admin user to auto-share all created documents with
+    ADMIN_OPEN_ID = "ou_4a18a2e35a5b04262a24f41731046d15"
+
     def __init__(self, settings: Settings):
         self.client = lark.Client.builder() \
             .app_id(settings.feishu_app_id) \
@@ -75,6 +78,11 @@ class FeishuDocManager:
 
         doc_id = resp.data.document.document_id
         logger.info(f"Created document: {title} -> {doc_id}")
+
+        # Auto-share with admin so they can edit/manage
+        self.share_document(doc_id, self.ADMIN_OPEN_ID,
+                            member_type="openid", perm="full_access")
+
         return {
             "doc_id": doc_id,
             "url": f"https://feishu.cn/docx/{doc_id}",
@@ -92,7 +100,13 @@ class FeishuDocManager:
         get_resp = self.client.docx.v1.document.get(get_req)
 
         if not get_resp.success():
+            # Common: 99003 = no permission, 91002 = not found
             logger.error(f"Failed to get doc {doc_id}: code={get_resp.code}, msg={get_resp.msg}")
+            if get_resp.code in (99003, 91002, 95009):
+                logger.warning(
+                    f"Permission denied for doc {doc_id}. "
+                    f"User needs to share this doc with the bot app."
+                )
             return None
 
         title = get_resp.data.document.title
@@ -206,6 +220,11 @@ class FeishuDocManager:
         """
         doc_id = self.extract_doc_id(url_or_id)
 
+        # Detect doc type from URL pattern
+        doc_type = "docx"
+        if isinstance(url_or_id, str) and "/wiki/" in url_or_id:
+            doc_type = "wiki"
+
         member = BaseMember.builder() \
             .member_type(member_type) \
             .member_id(member_id) \
@@ -214,7 +233,7 @@ class FeishuDocManager:
 
         req = CreatePermissionMemberRequest.builder() \
             .token(doc_id) \
-            .type("docx") \
+            .type(doc_type) \
             .request_body(member) \
             .build()
 
@@ -258,46 +277,63 @@ class FeishuDocManager:
         logger.info(f"Listed {len(results)} files in folder {folder_token or 'root'}")
         return results
 
+    @staticmethod
+    def _extract_elements(obj) -> str:
+        """Extract text from a block's elements list."""
+        if not obj or not hasattr(obj, 'elements'):
+            return ""
+        parts = []
+        for elem in (obj.elements or []):
+            if elem.text_run:
+                parts.append(elem.text_run.content or "")
+        return "".join(parts)
+
     def _extract_block_text(self, block) -> str:
         """Extract text content from a document block."""
         block_type = block.block_type
+        extract = self._extract_elements
 
-        # Paragraph (type 2)
-        if block_type == 2 and block.paragraph:
-            parts = []
-            for elem in (block.paragraph.elements or []):
-                if elem.text_run:
-                    parts.append(elem.text_run.content or "")
-            return "".join(parts)
+        def _safe_attr(name: str):
+            return getattr(block, name, None)
+
+        # Text/Paragraph (type 2)
+        if block_type == 2:
+            return extract(_safe_attr("text"))
 
         # Heading 1-9 (types 3-11)
-        if 3 <= block_type <= 11 and hasattr(block, 'heading1'):
-            heading_attr = getattr(block, f'heading{block_type - 2}', None)
-            if heading_attr:
-                parts = []
-                for elem in (heading_attr.elements or []):
-                    if elem.text_run:
-                        parts.append(elem.text_run.content or "")
-                prefix = "#" * (block_type - 2)
-                return f"{prefix} {''.join(parts)}"
+        if 3 <= block_type <= 11:
+            level = block_type - 2
+            txt = extract(_safe_attr(f"heading{level}"))
+            if txt:
+                return f"{'#' * level} {txt}"
+            return ""
+
+        # Bullet list (type 12)
+        if block_type == 12:
+            return f"- {extract(_safe_attr('bullet'))}"
+
+        # Ordered list (type 13)
+        if block_type == 13:
+            return f"1. {extract(_safe_attr('ordered'))}"
 
         # Code block (type 14)
-        if block_type == 14 and block.code:
-            parts = []
-            for elem in (block.code.elements or []):
-                if elem.text_run:
-                    parts.append(elem.text_run.content or "")
-            return f"```\n{''.join(parts)}\n```"
+        if block_type == 14:
+            return f"```\n{extract(_safe_attr('code'))}\n```"
 
-        # Bullet/ordered list (types 12, 13)
-        if block_type in (12, 13):
-            list_attr = block.bullet if block_type == 12 else block.ordered
-            if list_attr:
-                parts = []
-                for elem in (list_attr.elements or []):
-                    if elem.text_run:
-                        parts.append(elem.text_run.content or "")
-                prefix = "- " if block_type == 12 else "1. "
-                return f"{prefix}{''.join(parts)}"
+        # Quote (type 15)
+        if block_type == 15:
+            return f"> {extract(_safe_attr('quote'))}"
+
+        # Todo (type 17)
+        if block_type == 17:
+            return f"- [ ] {extract(_safe_attr('todo'))}"
+
+        # Divider (type 22)
+        if block_type == 22:
+            return "---"
+
+        # Callout (type 26)
+        if block_type == 26:
+            return extract(_safe_attr("callout"))
 
         return ""

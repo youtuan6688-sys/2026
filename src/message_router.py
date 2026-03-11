@@ -190,10 +190,25 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             self._handle_file_message(sender_id, stripped, chat_type, sender_open_id)
             return
 
-        # ── Quoted/reply message: check if it references a file ──
+        # ── Quoted/reply message: check if it references a file or text ──
         parent_id = getattr(raw_message, "parent_id", None) if raw_message else None
         if parent_id:
             if self._handle_quoted_file(sender_id, stripped, parent_id, chat_type, sender_open_id):
+                return
+            # Not a file quote — try to extract quoted text for context
+            quoted_text = self._extract_quoted_text(parent_id)
+            if quoted_text:
+                enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
+                logger.info(f"Quoted text prepended: {quoted_text[:80]}")
+                # Quoted messages with URLs or complex context → full Claude execution
+                # Skip simple intent classification which misroutes these
+                user_id = sender_open_id or sender_id
+                self.contacts.touch(user_id)
+                self._add_turn("user", enriched[:500], chat_id=sender_id)
+                if chat_type == "group":
+                    self._execute_claude_group(enriched, sender_id, user_id=user_id)
+                else:
+                    self._execute_claude(enriched, sender_id)
                 return
 
         # Resolve the actual user's open_id
@@ -363,6 +378,12 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         # URL mode: if message contains URLs, save them
         urls = extract_urls(text)
         if urls:
+            # Check if there's extra text beyond the URLs (instructions)
+            text_without_urls = stripped
+            for url in urls:
+                text_without_urls = text_without_urls.replace(url, "").strip()
+            has_instructions = len(text_without_urls) > 5
+
             saved_titles = []
             for url in urls:
                 try:
@@ -375,8 +396,15 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
                     self.sender.send_error(sender_id, url, str(e)[:200])
             if saved_titles:
                 summary = "、".join(saved_titles[:3])
-                self._add_turn("user", f"[发送了链接] {summary}", chat_id=sender_id)
+                url_list = " ".join(urls[:3])
+                self._add_turn("user", f"[发送了链接] {url_list} → {summary}", chat_id=sender_id)
                 self._add_turn("assistant", f"已保存到知识库: {summary}", chat_id=sender_id)
+
+            # If message has instructions beyond URLs, send everything to Claude
+            if has_instructions:
+                logger.info(f"URL + instructions detected, forwarding to Claude: {text_without_urls[:80]}")
+                self._execute_claude(stripped, sender_id)
+                return
             return
 
         # Smart intent classification

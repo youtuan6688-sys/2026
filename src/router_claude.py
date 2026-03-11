@@ -250,7 +250,26 @@ class ClaudeMixin:
         doc = self.doc_manager.read_document(url)
         if not doc or not doc.get("content"):
             logger.warning(f"Failed to read Feishu doc: {url}")
-            self.sender.send_error(sender_id, url, "无法读取飞书文档（请检查 bot 是否有文档权限）")
+            self.sender.send_text(
+                sender_id,
+                "无法读取这个飞书文档 😅\n\n"
+                "可能原因：文档没有共享给 bot\n\n"
+                "解决方法：打开文档 → 右上角「分享」"
+                "→ 搜索「BOT_知识库0302」→ 添加为「可阅读」\n\n"
+                "或者把文档设为「组织内可阅读」也行",
+            )
+            # Notify admin about the permission request
+            from src.task_scheduler import ADMIN_OPEN_ID
+            if sender_id != ADMIN_OPEN_ID:
+                user_name = self.contacts.get_name(sender_id) or sender_id[:12]
+                self.sender.send_text(
+                    ADMIN_OPEN_ID,
+                    f"📋 权限请求\n\n"
+                    f"用户: {user_name}\n"
+                    f"文档: {url}\n\n"
+                    f"bot 无权读取，需要文档所有者分享给 BOT_知识库0302。\n"
+                    f"如需帮 TA 处理，你可以打开文档添加 bot 权限。",
+                )
             return None
 
         title = doc["title"] or "未命名飞书文档"

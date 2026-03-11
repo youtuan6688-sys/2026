@@ -359,6 +359,38 @@ class FilesMixin:
             logger.error(f"Error fetching message {message_id}: {e}", exc_info=True)
             return None
 
+    def _extract_quoted_text(self, parent_id: str) -> str:
+        """Extract text content from a quoted message. Returns empty string if not text."""
+        parent = self._fetch_message(parent_id)
+        if not parent:
+            return ""
+
+        msg_type = parent.get("msg_type", "")
+        content = parent.get("content", {})
+
+        if msg_type == "text":
+            return content.get("text", "")
+
+        if msg_type == "post":
+            # Rich text: extract all text elements
+            texts = []
+            post_content = content.get("content", content)
+            if isinstance(post_content, dict):
+                for lang_content in post_content.values():
+                    if isinstance(lang_content, dict):
+                        for paragraph in lang_content.get("content", []):
+                            for element in paragraph:
+                                if element.get("tag") == "text":
+                                    texts.append(element.get("text", ""))
+            elif isinstance(post_content, list):
+                for paragraph in post_content:
+                    for element in paragraph:
+                        if element.get("tag") == "text":
+                            texts.append(element.get("text", ""))
+            return " ".join(texts)
+
+        return ""
+
     def _handle_quoted_file(self, sender_id: str, user_text: str,
                              parent_id: str, chat_type: str,
                              sender_open_id: str) -> bool:
