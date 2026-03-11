@@ -67,9 +67,15 @@ class ContextMixin:
                 return
 
         history = self._get_history(chat_id)
+        # Assistant responses need more context for continuity
+        if role == "assistant" and len(text) > 800:
+            # Keep first 600 + last 400 chars (conclusions/next steps are at the end)
+            truncated = text[:600] + "\n...\n" + text[-400:]
+        else:
+            truncated = text[:1000]
         entry = {
             "role": role,
-            "text": text[:500],
+            "text": truncated,
             "time": datetime.now().strftime("%H:%M"),
         }
         if user_name and role == "user":

@@ -429,6 +429,76 @@ class FilesMixin:
 
         return "\n".join(p for p in parts if p)
 
+    def _search_conversation_history(self, search_text: str,
+                                     max_results: int = 3) -> str:
+        """Search daily_buffer JSONL files for past conversations matching search_text.
+
+        Used when user quotes an old message to recover surrounding context.
+        """
+        from pathlib import Path
+        import json as _json
+        from datetime import date, timedelta
+
+        buffer_dir = Path("/Users/tuanyou/Happycode2026/data/daily_buffer")
+        if not buffer_dir.exists():
+            return ""
+
+        # Extract keywords from search text (first 5 meaningful words)
+        words = [w for w in search_text.replace("\n", " ").split()
+                 if len(w) > 1 and w not in ("的", "了", "是", "在", "我", "你", "他")][:5]
+        if not words:
+            return ""
+
+        # Search recent 7 days of buffer files
+        today = date.today()
+        matches = []
+        for days_ago in range(7):
+            d = today - timedelta(days=days_ago)
+            fpath = buffer_dir / f"{d.isoformat()}.jsonl"
+            if not fpath.exists():
+                continue
+            try:
+                entries = []
+                for line in fpath.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    entries.append(_json.loads(line))
+
+                for i, entry in enumerate(entries):
+                    combined = (entry.get("user_msg", "") + " " +
+                                entry.get("bot_reply", ""))
+                    # Match if at least 2 keywords found
+                    hits = sum(1 for w in words if w in combined)
+                    if hits >= min(2, len(words)):
+                        # Grab surrounding context (1 before, 1 after)
+                        context_entries = entries[max(0, i-1):i+2]
+                        matches.append((hits, d.isoformat(), context_entries))
+                        if len(matches) >= max_results:
+                            break
+            except Exception as e:
+                logger.warning(f"Error searching buffer {fpath}: {e}")
+                continue
+            if len(matches) >= max_results:
+                break
+
+        if not matches:
+            return ""
+
+        # Format results
+        matches.sort(key=lambda x: -x[0])  # Best matches first
+        parts = ["[历史对话回查]"]
+        for _, date_str, entries in matches[:max_results]:
+            for e in entries:
+                ts = e.get("ts", "")[:16]
+                user_msg = e.get("user_msg", "")[:200]
+                bot_reply = e.get("bot_reply", "")[:300]
+                parts.append(f"[{ts}] 用户: {user_msg}")
+                if bot_reply:
+                    parts.append(f"[{ts}] 助手: {bot_reply}")
+            parts.append("---")
+
+        return "\n".join(parts)
+
     def _handle_quoted_file(self, sender_id: str, user_text: str,
                              parent_id: str, chat_type: str,
                              sender_open_id: str) -> bool:

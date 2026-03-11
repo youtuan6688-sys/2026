@@ -235,7 +235,18 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
                         f"用户问题: {stripped}"
                     )
                 else:
-                    enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
+                    # Try to find historical conversation context
+                    history_context = self._search_conversation_history(
+                        quoted_text[:200]
+                    )
+                    if history_context:
+                        enriched = (
+                            f"[引用消息] {quoted_text}\n\n"
+                            f"{history_context}\n\n"
+                            f"用户回复: {stripped}"
+                        )
+                    else:
+                        enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
 
                 # Quoted messages → full Claude execution
                 user_id = sender_open_id or sender_id

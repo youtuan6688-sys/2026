@@ -87,7 +87,7 @@ class ClaudeMixin:
                     sender_id, output,
                     at_user_id=user_id, at_user_name=user_name,
                 )
-                self._add_turn("assistant", output[:500], chat_id=sender_id)
+                self._add_turn("assistant", output, chat_id=sender_id)
 
                 self._buffer_conversation(
                     user_id=user_id, user_name=user_name,
@@ -152,7 +152,7 @@ class ClaudeMixin:
                 if not output:
                     output = "(no output)"
                 self._send_long_text(sender_id, output)
-                self._add_turn("assistant", output[:500], chat_id=sender_id)
+                self._add_turn("assistant", output, chat_id=sender_id)
 
                 user_id = sender_id if not sender_id.startswith("oc_") else ""
                 user_name = self.contacts.get_name(user_id) if user_id else ""
@@ -192,7 +192,7 @@ class ClaudeMixin:
             if not output:
                 output = "(no output)"
             self._send_long_text(sender_id, output)
-            self._add_turn("assistant", output[:500], chat_id=sender_id)
+            self._add_turn("assistant", output, chat_id=sender_id)
         except Exception as e:
             logger.error(f"Fallback execution also failed: {e}")
             self.sender.send_text(sender_id, f"执行失败: {e}")
