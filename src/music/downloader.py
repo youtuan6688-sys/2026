@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import subprocess
+import uuid
 from hashlib import md5
 from pathlib import Path
 
@@ -211,6 +212,75 @@ def _parse_og_title(title: str) -> tuple[str, str]:
     return title.strip(), ""
 
 
+def _run_ytdlp(url: str, audio_format: str) -> tuple[DownloadResult, dict, Path]:
+    """Run yt-dlp in an isolated temp directory.
+
+    Returns (result, info_dict, job_dir).
+    On failure, result.success is False and info/job_dir may be empty.
+    """
+    job_dir = TEMP_DIR / uuid.uuid4().hex[:8]
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    output_template = str(job_dir / "%(title)s.%(ext)s")
+    cmd = [
+        YT_DLP,
+        "-x",
+        "--audio-format", audio_format,
+        "--audio-quality", "0",
+        "--embed-thumbnail",
+        "--add-metadata",
+        "--no-playlist",
+        "--ffmpeg-location", FFMPEG,
+        "-o", output_template,
+        "--print-json",
+        url,
+    ]
+
+    logger.info(f"Downloading: {url} -> {job_dir}")
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if proc.returncode != 0:
+            error_msg = proc.stderr.strip().split("\n")[-1] if proc.stderr else "Unknown error"
+            logger.error(f"yt-dlp failed: {error_msg}")
+            return DownloadResult(success=False, error=error_msg), {}, job_dir
+
+        info = {}
+        for line in reversed(proc.stdout.strip().split("\n")):
+            try:
+                info = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+        if not info:
+            return DownloadResult(success=False, error="无法解析下载结果"), {}, job_dir
+
+        filepath = info.get("filepath") or info.get("_filename", "")
+
+        if filepath:
+            actual_path = Path(filepath)
+            converted = actual_path.with_suffix(f".{audio_format}")
+            if converted.exists():
+                actual_path = converted
+            elif not actual_path.exists():
+                actual_path = _find_latest_file(job_dir, audio_format)
+        else:
+            actual_path = _find_latest_file(job_dir, audio_format)
+
+        if not actual_path or not actual_path.exists():
+            return DownloadResult(success=False, error="下载文件未找到"), info, job_dir
+
+        return DownloadResult(success=True, file_path=str(actual_path)), info, job_dir
+
+    except subprocess.TimeoutExpired:
+        return DownloadResult(success=False, error="下载超时（5分钟）"), {}, job_dir
+    except Exception as e:
+        logger.exception(f"Download error: {e}")
+        return DownloadResult(success=False, error=str(e)), {}, job_dir
+
+
 def download(url: str, platform: str) -> DownloadResult:
     """Download audio from URL using yt-dlp.
 
@@ -221,7 +291,6 @@ def download(url: str, platform: str) -> DownloadResult:
     Returns:
         DownloadResult with file path and metadata on success.
     """
-    TEMP_DIR.mkdir(parents=True, exist_ok=True)
     config = PLATFORM_CONFIG.get(platform, {"lossless": False, "needs_search": False})
 
     # For platforms needing search (Spotify, Apple Music):
@@ -238,98 +307,99 @@ def download(url: str, platform: str) -> DownloadResult:
         actual_url = f"ytsearch1:{search_query}"
         logger.info(f"Platform {platform} needs search, query: {search_query}")
 
-    # Choose audio format based on lossless capability
     audio_format = "flac" if config["lossless"] else "mp3"
 
-    # Build yt-dlp command
-    output_template = str(TEMP_DIR / "%(title)s.%(ext)s")
+    result, info, job_dir = _run_ytdlp(actual_url, audio_format)
+    if not result.success:
+        return result
+
+    return DownloadResult(
+        success=True,
+        file_path=result.file_path,
+        title=info.get("track") or info.get("title", Path(result.file_path).stem),
+        artist=info.get("artist") or info.get("uploader") or info.get("creator", "Unknown"),
+        album=info.get("album", ""),
+        duration_seconds=int(info.get("duration", 0)),
+        format=audio_format,
+        cover_url=info.get("thumbnail", ""),
+        metadata={
+            "track_number": info.get("track_number", 0),
+            "genre": info.get("genre", ""),
+            "year": info.get("release_year") or info.get("upload_date", "")[:4] if info.get("upload_date") else "",
+            "source_platform": platform,
+            "source_url": url,
+        },
+    )
+
+
+def download_by_query(query: str) -> DownloadResult:
+    """Download audio by searching YouTube Music with a text query.
+
+    Args:
+        query: Search query like "周杰伦 晴天" or "artist - title".
+
+    Returns:
+        DownloadResult with file path and metadata on success.
+    """
+    search_url = f"ytsearch1:{query}"
+    logger.info(f"Searching YouTube Music for: {query}")
+
+    result, info, job_dir = _run_ytdlp(search_url, "flac")
+    if not result.success:
+        return result
+
+    source_url = info.get("webpage_url", "")
+    return DownloadResult(
+        success=True,
+        file_path=result.file_path,
+        title=info.get("track") or info.get("title", Path(result.file_path).stem),
+        artist=info.get("artist") or info.get("uploader") or info.get("creator", "Unknown"),
+        album=info.get("album", ""),
+        duration_seconds=int(info.get("duration", 0)),
+        format="flac",
+        cover_url=info.get("thumbnail", ""),
+        metadata={
+            "track_number": info.get("track_number", 0),
+            "genre": info.get("genre", ""),
+            "year": info.get("release_year") or info.get("upload_date", "")[:4] if info.get("upload_date") else "",
+            "source_platform": "youtube_music",
+            "source_url": source_url,
+        },
+    )
+
+
+def convert_to_mp3(source_path: Path) -> Path | None:
+    """Convert an audio file to MP3 320kbps using ffmpeg.
+
+    Returns the MP3 path in TEMP_DIR on success, None on failure.
+    The caller is responsible for cleaning up the returned file.
+    """
+    if source_path.suffix.lower() == ".mp3":
+        return source_path
+
+    # Write to isolated temp dir to avoid polluting library
+    mp3_dir = TEMP_DIR / f"mp3_{uuid.uuid4().hex[:8]}"
+    mp3_dir.mkdir(parents=True, exist_ok=True)
+    mp3_path = mp3_dir / f"{source_path.stem}.mp3"
+
     cmd = [
-        YT_DLP,
-        "-x",                           # Extract audio only
-        "--audio-format", audio_format,
-        "--audio-quality", "0",          # Best quality
-        "--embed-thumbnail",             # Embed cover art
-        "--add-metadata",                # Embed metadata
-        "--no-playlist",                 # Single track only
-        "--ffmpeg-location", FFMPEG,
-        "-o", output_template,
-        "--print-json",                  # Output JSON metadata
-        actual_url,
+        FFMPEG, "-i", str(source_path),
+        "-codec:a", "libmp3lame",
+        "-b:a", "320k",
+        "-y",
+        str(mp3_path),
     ]
-
-    logger.info(f"Downloading: {' '.join(cmd[:6])}... {actual_url}")
-
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
-        )
-
-        if result.returncode != 0:
-            error_msg = result.stderr.strip().split("\n")[-1] if result.stderr else "Unknown error"
-            logger.error(f"yt-dlp failed: {error_msg}")
-            return DownloadResult(success=False, error=error_msg)
-
-        # Parse JSON output (may have multiple lines, take the last valid one)
-        info = {}
-        for line in reversed(result.stdout.strip().split("\n")):
-            try:
-                info = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                continue
-
-        if not info:
-            return DownloadResult(success=False, error="无法解析下载结果")
-
-        # Find the downloaded file
-        requested_ext = info.get("ext", audio_format)
-        filepath = info.get("filepath") or info.get("_filename", "")
-
-        # yt-dlp may output the pre-conversion filename; find the actual file
-        if filepath:
-            actual_path = Path(filepath)
-            # Check if the converted file exists
-            converted = actual_path.with_suffix(f".{audio_format}")
-            if converted.exists():
-                actual_path = converted
-            elif not actual_path.exists():
-                # Search temp dir for recently created files
-                actual_path = _find_latest_file(TEMP_DIR, audio_format)
-        else:
-            actual_path = _find_latest_file(TEMP_DIR, audio_format)
-
-        if not actual_path or not actual_path.exists():
-            return DownloadResult(success=False, error="下载文件未找到")
-
-        title = info.get("track") or info.get("title", actual_path.stem)
-        artist = info.get("artist") or info.get("uploader") or info.get("creator", "Unknown")
-        album = info.get("album", "")
-        duration = int(info.get("duration", 0))
-        cover_url = info.get("thumbnail", "")
-
-        return DownloadResult(
-            success=True,
-            file_path=str(actual_path),
-            title=title,
-            artist=artist,
-            album=album,
-            duration_seconds=duration,
-            format=audio_format,
-            cover_url=cover_url,
-            metadata={
-                "track_number": info.get("track_number", 0),
-                "genre": info.get("genre", ""),
-                "year": info.get("release_year") or info.get("upload_date", "")[:4] if info.get("upload_date") else "",
-                "source_platform": platform,
-                "source_url": url,
-            },
-        )
-
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and mp3_path.exists():
+            logger.info(f"Converted to MP3: {mp3_path}")
+            return mp3_path
+        logger.error(f"ffmpeg conversion failed: {result.stderr[:200]}")
     except subprocess.TimeoutExpired:
-        return DownloadResult(success=False, error="下载超时（5分钟）")
+        logger.error(f"ffmpeg timed out converting {source_path}")
     except Exception as e:
-        logger.exception(f"Download error: {e}")
-        return DownloadResult(success=False, error=str(e))
+        logger.error(f"MP3 conversion error: {e}")
+    return None
 
 
 def _find_latest_file(directory: Path, ext: str) -> Path | None:
