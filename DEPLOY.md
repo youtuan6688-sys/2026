@@ -52,11 +52,11 @@
 
 ```bash
 cd ~
-git clone https://github.com/tuanyou/Happycode2026.git
+git clone git@github.com:youtuan6688-sys/2026.git Happycode2026
 cd Happycode2026
 ```
 
-> **注意**：如果仓库是 private 的，你需要先 `gh auth login` 登录 GitHub。
+> **注意**：仓库是 private 的，需要先把你的 SSH 公钥添加到 GitHub（Settings → SSH Keys），或者用 `gh auth login` 登录。
 
 ---
 
