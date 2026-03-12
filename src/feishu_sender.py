@@ -32,6 +32,18 @@ class FeishuSender:
         content = json.dumps({"text": text})
         self._send(receive_id, "text", content)
 
+    def send_markdown(self, receive_id: str, text: str):
+        """Send a message with markdown rendering using an interactive card."""
+        card = {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": text,
+                }
+            ]
+        }
+        self._send(receive_id, "interactive", json.dumps(card, ensure_ascii=False))
+
     def send_text_at(self, chat_id: str, text: str,
                      at_user_id: str, at_user_name: str = ""):
         """Send a text message in group chat, @mentioning a specific user.

@@ -37,17 +37,15 @@ class CommandsMixin:
 
     def _send_long_text(self, sender_id: str, text: str,
                         at_user_id: str = "", at_user_name: str = ""):
-        """Send text, splitting into multiple messages if needed."""
+        """Send text with markdown rendering, splitting into multiple messages if needed."""
         chunks = self._split_text(text)
         for i, chunk in enumerate(chunks):
             if len(chunks) > 1:
                 chunk = f"[{i + 1}/{len(chunks)}]\n{chunk}"
             if i == 0 and at_user_id and sender_id.startswith("oc_"):
-                self.sender.send_text_at(
-                    sender_id, chunk, at_user_id, at_user_name,
-                )
-            else:
-                self.sender.send_text(sender_id, chunk)
+                # Prepend @mention using card markdown syntax
+                chunk = f'<at id="{at_user_id}"></at> {chunk}'
+            self.sender.send_markdown(sender_id, chunk)
 
     # ── Help & Status ──
 

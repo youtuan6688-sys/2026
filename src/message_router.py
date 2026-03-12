@@ -79,6 +79,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self._interaction_count = 0
         self._music_handler = None
         self._image_handler = None
+        self._video_handler = None
 
     # ── Feature Handlers (lazy init) ──
 
@@ -93,6 +94,18 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             from src.image.handler import ImageHandler
             self._image_handler = ImageHandler(self.sender)
         return self._image_handler
+
+    def _get_video_handler(self):
+        if self._video_handler is None:
+            from src.video.handler import VideoHandler
+            self._video_handler = VideoHandler(self.sender, self.quota)
+        return self._video_handler
+
+    # Video analysis group — auto-analyze video URLs in this group
+    _VIDEO_GROUP_ID = "oc_d42807f92f606dc0b448f16c6c42fece"
+
+    def _is_video_group(self, chat_id: str) -> bool:
+        return chat_id == self._VIDEO_GROUP_ID
 
     # ══════════════════════════════════════
     # ── Main Entry Point ──
@@ -236,15 +249,21 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         if stripped.startswith("/image"):
             self._get_image_handler().handle_command(stripped, sender_id)
             return
+        if stripped.startswith("/video"):
+            self._get_video_handler().handle_command(stripped, sender_id)
+            return
 
-        # URLs → music detection + knowledge base save
+        # URLs → music detection + video auto-analyze + knowledge base save
         urls = extract_urls(text)
         if urls:
+            from src.video.handler import is_video_url
             remaining_urls = []
             for url in urls:
                 music_platform = detect_music_platform(url)
                 if music_platform:
                     self._get_music_handler().handle_music_url(url, music_platform, sender_id)
+                elif is_video_url(url) and self._is_video_group(sender_id):
+                    self._get_video_handler().auto_analyze(url, sender_id)
                 else:
                     remaining_urls.append(url)
             for url in remaining_urls:
@@ -291,6 +310,18 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
 
     def _route_private(self, stripped: str, text: str, sender_id: str) -> None:
         """Route private chat messages (full admin mode)."""
+        from src.long_task import LongTaskManager
+
+        ltm = LongTaskManager()
+
+        # Pause any active long task when user sends a new message
+        # (unless it's a continuation shortcut)
+        if stripped not in ("继续", "继续执行"):
+            active = ltm.get_active(sender_id)
+            if active:
+                ltm.pause(reason="user_new_message")
+                logger.info(f"Long task {active.task_id} paused by new user message")
+
         # Non-slash resume shortcuts
         if stripped in ("继续", "继续执行"):
             self._resume_from_checkpoint(sender_id)
@@ -307,9 +338,14 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             if self._handle_urls_private(stripped, urls, sender_id):
                 return
 
+        # Detect multi-step task signal
+        is_long_task = ltm.is_multi_step_request(stripped)
+        if is_long_task:
+            logger.info(f"Multi-step task detected: {stripped[:80]}")
+
         # All non-command, non-URL messages → Claude Code with RAG + memory + history
         self._add_turn("user", stripped, chat_id=sender_id)
-        self._execute_claude(stripped, sender_id)
+        self._execute_claude(stripped, sender_id, is_long_task=is_long_task)
 
     def _dispatch_private_command(self, stripped: str, sender_id: str) -> bool:
         """Dispatch explicit slash commands. Returns True if handled."""
@@ -372,6 +408,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/image"):
             self._get_image_handler().handle_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/video"):
+            self._get_video_handler().handle_command(stripped, sender_id)
             return True
 
         return False

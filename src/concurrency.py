@@ -20,8 +20,8 @@ class MessageGate:
     """Controls concurrent message processing with priority."""
 
     def __init__(self, max_group_workers: int = MAX_GROUP_WORKERS):
-        # Private chat: no limit (admin always gets through)
-        self._private_lock = threading.Semaphore(1)
+        # Private chat: 2 slots — long task + instant admin message
+        self._private_lock = threading.Semaphore(2)
 
         # Group chat: bounded worker pool
         self._group_semaphore = threading.Semaphore(max_group_workers)

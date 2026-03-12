@@ -4,9 +4,13 @@ import json
 import logging
 import re
 import subprocess
+import threading
+import time
 from datetime import date, datetime
 from pathlib import Path
 
+from scripts.claude_runner import run_with_resume
+from src.long_task import LongTaskManager, STEP_COOLDOWN_S
 from src.utils.url_utils import extract_urls, detect_platform
 from src.parsers import get_parser
 
@@ -128,13 +132,22 @@ class ClaudeMixin:
 
     # ── Claude Code Execution (with RAG + auto-resume) ──
 
-    def _execute_claude(self, prompt: str, sender_id: str):
-        """Execute Claude via claude -p with RAG context and auto-resume."""
+    def _execute_claude(self, prompt: str, sender_id: str,
+                        is_long_task: bool = False):
+        """Execute Claude via claude -p with RAG context and auto-resume.
+
+        If is_long_task=True, automatically continues until task is done
+        or max steps reached.
+        """
         self.sender.send_text(sender_id, f"思考中... \n> {prompt[:100]}")
 
         def _run():
+            ltm = LongTaskManager()
             try:
-                from scripts.claude_runner import run_with_resume
+
+                # Start long task tracking if flagged
+                if is_long_task:
+                    ltm.start(prompt, sender_id)
 
                 full_prompt = self._build_full_prompt(prompt, chat_id=sender_id)
                 system_prompt = self._build_system_prompt(user_id=sender_id)
@@ -162,20 +175,142 @@ class ClaudeMixin:
                     chat_type="p2p",
                 )
 
+                # ── Long task: schedule next step outside this lock ──
+                active_task = ltm.get_active(sender_id)
+                if active_task and success and ltm.claim_step(sender_id):
+                    self._schedule_next_step(
+                        ltm, active_task, output, sender_id, system_prompt,
+                    )
+                elif active_task and not success:
+                    ltm.complete(reason="execution_failed")
+
             except Exception as e:
                 logger.error(f"Claude execution failed: {e}", exc_info=True)
                 self.error_tracker.track(
                     "claude_error", str(e), "execute_claude", "high", prompt[:200],
                 )
                 self.sender.send_text(sender_id, f"执行失败: {e}")
+                # Clean up long task on error
+                try:
+                    ltm.complete(reason="error")
+                except Exception as inner:
+                    logger.warning(f"Failed to complete long task on error: {inner}")
+
+        self.gate.run_private(_run)
+
+    def _schedule_next_step(self, ltm, task, last_output: str,
+                            sender_id: str, system_prompt: str) -> None:
+        """Check if next step needed, then schedule it via run_private().
+
+        Called INSIDE the current private lock. Does pre-checks synchronously,
+        then schedules the actual execution as a NEW run_private() call so the
+        current lock is released first. Must be the LAST call in the caller.
+
+        Guarantees: release_step() is always called on every exit path.
+        """
+        try:
+            # Record the step just completed
+            task = ltm.record_step(last_output)
+            if not task or task.status != "active":
+                ltm.release_step(sender_id)
+                return
+
+            # Check if Claude's output signals task is done
+            if not ltm.should_continue(last_output):
+                ltm.complete(reason="task_done_signal")
+                ltm.release_step(sender_id)
+                self.sender.send_text(
+                    sender_id,
+                    f"长任务完成，共执行 {task.steps_completed} 步 ✅",
+                )
+                return
+
+            # Check if user sent a new message (task would be paused)
+            if not ltm.get_active(sender_id):
+                logger.info("Long task no longer active (paused or completed)")
+                ltm.release_step(sender_id)
+                return
+
+            # Cooldown, then schedule next step as independent run_private()
+            # Note: release_step is called inside _run_continuation_step on completion
+            def _delayed_step():
+                time.sleep(STEP_COOLDOWN_S)
+                self._run_continuation_step(ltm, sender_id, system_prompt)
+
+            threading.Thread(target=_delayed_step, daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"_schedule_next_step failed: {e}", exc_info=True)
+            ltm.release_step(sender_id)
+
+    def _run_continuation_step(self, ltm, sender_id: str,
+                               system_prompt: str) -> None:
+        """Execute one continuation step via run_private() (acquires its own lock)."""
+
+        def _run():
+            try:
+                # Re-check task is still active (user may have sent new msg)
+                task = ltm.get_active(sender_id)
+                if not task:
+                    logger.info("Long task no longer active, skipping step")
+                    ltm.release_step(sender_id)
+                    return
+
+                continue_prompt = ltm.build_continue_prompt(task)
+                step_num = task.steps_completed + 1
+                self.sender.send_text(
+                    sender_id,
+                    f"⏩ 自动续接 (步骤 {step_num})...",
+                )
+
+                full_prompt = self._build_full_prompt(
+                    continue_prompt, chat_id=sender_id,
+                )
+                task_id = f"long-step-{step_num}-{datetime.now().strftime('%H%M%S')}"
+
+                success, output = run_with_resume(
+                    full_prompt,
+                    task_id=task_id,
+                    timeout=480,
+                    max_retries=2,
+                    user_message=continue_prompt,
+                    system_prompt=system_prompt,
+                )
+
+                if not output:
+                    output = "(no output)"
+                self._send_long_text(sender_id, output)
+                self._add_turn("assistant", output, chat_id=sender_id)
+
+                self._buffer_conversation(
+                    user_id=sender_id, user_name="",
+                    user_msg=f"[auto-continue step {step_num}]",
+                    bot_reply=output, chat_type="p2p",
+                )
+
+                if not success:
+                    ltm.complete(reason="step_failed")
+                    ltm.release_step(sender_id)
+                    self.sender.send_text(sender_id, "执行出错，长任务暂停")
+                    return
+
+                # Schedule next step (recursive chain)
+                # _schedule_next_step will call record_step to get fresh task
+                self._schedule_next_step(
+                    ltm, None, output, sender_id, system_prompt,
+                )
+
+            except Exception as e:
+                logger.error(f"Continuation step failed: {e}", exc_info=True)
+                ltm.complete(reason="error")
+                ltm.release_step(sender_id)
+                self.sender.send_text(sender_id, f"续接执行失败: {e}")
 
         self.gate.run_private(_run)
 
     def _execute_claude_fallback(self, prompt: str, sender_id: str):
         """Fallback to per-message claude -p when brain is unavailable."""
         try:
-            from scripts.claude_runner import run_with_resume
-
             full_prompt = self._build_full_prompt(prompt)
             system_prompt = self._build_system_prompt(user_id=sender_id)
             task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"

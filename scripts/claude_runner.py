@@ -27,7 +27,6 @@ sys.path.insert(0, str(PROJECT_DIR))
 from src.checkpoint import Checkpoint, CheckpointManager, CheckpointStep
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [runner] %(message)s")
 
 CLAUDE_BIN = "/Users/tuanyou/.local/bin/claude"
 LOG_DIR = PROJECT_DIR / "vault/tasks/logs"
@@ -376,6 +375,7 @@ def run_with_resume(
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [runner] %(message)s")
     import argparse
 
     parser = argparse.ArgumentParser(description="Run Claude with auto-resume on timeout")
