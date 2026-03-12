@@ -17,6 +17,7 @@ ADB = "/opt/homebrew/bin/adb"
 DOWNLOAD_DIR = Path("/Users/tuanyou/Happycode2026/data/video_raw")
 MAX_DURATION = 600       # 10 min
 MAX_FILE_SIZE_MB = 100   # Gemini File API limit
+ADB_MAX_DURATION = 120   # ADB 录屏上限 2 分钟，长视频不值得录
 PREFERRED_FORMAT = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
 
 # Douyin deeplink: snssdk1128://aweme/detail/{video_id}
@@ -86,13 +87,19 @@ def download(url: str, platform: str = "generic") -> VideoInfo:
         logger.error(f"Download error: {e}")
 
     # Fallback: ADB screen-record for platforms that need cookies
-    if not info.video_path and platform in ("douyin", "xiaohongshu"):
-        logger.info(f"yt-dlp failed, trying ADB+scrcpy fallback for {platform}")
-        adb_path = _adb_record_video(url, info.duration or 60)
+    # Only for short videos (≤2min) — long videos not worth the recording time
+    duration_for_adb = info.duration or 60
+    if (not info.video_path
+            and platform in ("douyin", "xiaohongshu")
+            and duration_for_adb <= ADB_MAX_DURATION):
+        logger.info(f"yt-dlp failed, trying ADB+scrcpy fallback for {platform} ({duration_for_adb}s)")
+        adb_path = _adb_record_video(url, duration_for_adb)
         if adb_path:
             info.video_path = str(adb_path)
             info.file_size_mb = round(adb_path.stat().st_size / (1024 * 1024), 1)
             logger.info(f"ADB fallback succeeded: {adb_path.name} ({info.file_size_mb}MB)")
+    elif not info.video_path and platform in ("douyin", "xiaohongshu") and duration_for_adb > ADB_MAX_DURATION:
+        logger.info(f"Skipping ADB fallback: video too long ({duration_for_adb}s > {ADB_MAX_DURATION}s)")
 
     return info
 
