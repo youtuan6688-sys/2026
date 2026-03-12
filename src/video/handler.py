@@ -224,12 +224,13 @@ class VideoHandler:
             )
             if metrics:
                 parts = []
-                if metrics.get("views"):
-                    parts.append(f"播放 {metrics['views']:,}")
-                if metrics.get("likes"):
-                    parts.append(f"赞 {metrics['likes']:,}")
-                if metrics.get("comments"):
-                    parts.append(f"评论 {metrics['comments']:,}")
+                for label, key in [("播放", "views"), ("赞", "likes"), ("评论", "comments")]:
+                    val = metrics.get(key)
+                    if val:
+                        try:
+                            parts.append(f"{label} {int(val):,}")
+                        except (ValueError, TypeError):
+                            parts.append(f"{label} {val}")
                 if parts:
                     lines.append(" | ".join(parts))
         lines.append("")
