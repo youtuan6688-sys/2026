@@ -31,6 +31,15 @@ class ClaudeMixin:
                 persona = self._load_group_persona()
 
                 # 铁律 + 人设 → system prompt（高权重）
+                is_video_group = self._is_video_group(sender_id)
+                task_detect_rule = ""
+                if is_video_group:
+                    task_detect_rule = (
+                        "\n4. 任务检测：如果用户的消息是一个需要写代码、跑脚本、"
+                        "操作文件、分析数据、生成报告等实际执行类任务，"
+                        "在你的回复最末尾独占一行写 [TASK]。"
+                        "纯聊天、提问、讨论则不加。\n"
+                    )
                 system_prompt = (
                     "⛔ 铁律（违反任何一条=严重失职，优先级最高）：\n"
                     "1. 严禁编造数据！你回复中的任何数字、百分比、排名、趋势，"
@@ -40,7 +49,8 @@ class ClaudeMixin:
                     "违规示例（禁止）：'渗透率<8%'、'客单价¥68'、'占比65%' ← 这些如果不是来自用户文件就是编造。\n"
                     "2. 严禁空头承诺！不能说「已安排」「正在监控」「帮你拉数据」。"
                     "你只能处理对话中已有的信息。\n"
-                    "3. 推测性结论必须标注「⚠️ 推测」。\n\n"
+                    "3. 推测性结论必须标注「⚠️ 推测」。\n"
+                    f"{task_detect_rule}\n"
                     f"{persona}"
                 )
 
@@ -86,6 +96,15 @@ class ClaudeMixin:
                 if not output:
                     output = "啊这...我刚走神了，再说一遍？"
 
+                # Detect [TASK] marker → auto-escalate to workspace
+                task_escalated = False
+                if is_video_group and output.rstrip().endswith("[TASK]"):
+                    # Strip the marker from the reply
+                    clean_output = output.rstrip().removesuffix("[TASK]").rstrip()
+                    if clean_output:
+                        output = clean_output
+                    task_escalated = True
+
                 user_name = self.contacts.get_name(user_id) if user_id else ""
                 self._send_long_text(
                     sender_id, output,
@@ -98,6 +117,14 @@ class ClaudeMixin:
                     user_msg=prompt, bot_reply=output,
                     chat_type="group", chat_id=sender_id,
                 )
+
+                # Auto-escalate: fire workspace execution after chat reply
+                if task_escalated and user_id:
+                    try:
+                        handler = self._get_workspace_handler()
+                        handler.handle_work(prompt, sender_id, user_id)
+                    except Exception as e:
+                        logger.warning("Task escalation failed: %s", e)
 
             except subprocess.TimeoutExpired:
                 self.sender.send_text(sender_id, "想太久了脑子转不过来，换个简单点的问法？")
