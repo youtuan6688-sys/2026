@@ -98,7 +98,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
     def _get_video_handler(self):
         if self._video_handler is None:
             from src.video.handler import VideoHandler
-            self._video_handler = VideoHandler(self.sender, self.quota)
+            self._video_handler = VideoHandler(self.sender)
         return self._video_handler
 
     # Video analysis group — auto-analyze video URLs in this group
