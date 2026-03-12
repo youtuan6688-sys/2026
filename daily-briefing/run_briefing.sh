@@ -7,6 +7,15 @@
 
 set -o pipefail
 
+# Global timeout: kill entire script after 30 minutes
+SCRIPT_TIMEOUT=1800
+( sleep $SCRIPT_TIMEOUT && kill -TERM $$ 2>/dev/null ) &
+WATCHDOG_PID=$!
+trap "kill $WATCHDOG_PID 2>/dev/null" EXIT
+
+# Per-command timeout for claude calls (8 minutes each)
+CLAUDE_TIMEOUT=480
+
 PROJECT_DIR="/Users/tuanyou/Happycode2026/daily-briefing"
 REPORTS_DIR="$PROJECT_DIR/reports"
 LOGS_DIR="$PROJECT_DIR/logs"
@@ -50,7 +59,7 @@ log "DEBUG: claude binary: $(which claude)"
 log "DEBUG: CLAUDECODE=${CLAUDECODE:-unset}"
 
 # Run Claude Code with web search (explicitly unset CLAUDECODE to avoid nesting)
-env -u CLAUDECODE claude -p "$PROMPT" \
+env -u CLAUDECODE gtimeout $CLAUDE_TIMEOUT claude -p "$PROMPT" \
     --allowedTools "WebSearch,WebFetch" \
     > "$REPORT_FILE" 2>> "$LOG_FILE"
 
@@ -119,7 +128,7 @@ else:
 Report:
 $(cat "$REPORT_FILE")"
 
-    DIGEST=$(claude -p "$DIGEST_PROMPT" 2>> "$LOG_FILE")
+    DIGEST=$(gtimeout $CLAUDE_TIMEOUT claude -p "$DIGEST_PROMPT" 2>> "$LOG_FILE")
     if [ -n "$DIGEST" ]; then
         printf "\n## %s\n%s\n" "$DATE" "$DIGEST" >> "$DIGEST_FILE"
         log "Digest appended to memory"
@@ -136,7 +145,7 @@ $(cat "$REPORT_FILE")"
 简报:
 $(cat "$REPORT_FILE")"
 
-    ACTIONS=$(claude -p "$EVOLVE_PROMPT" 2>> "$LOG_FILE")
+    ACTIONS=$(gtimeout $CLAUDE_TIMEOUT claude -p "$EVOLVE_PROMPT" 2>> "$LOG_FILE")
     if [ -n "$ACTIONS" ] && [ "$ACTIONS" != "无需行动" ]; then
         PENDING_FILE="/Users/tuanyou/Happycode2026/vault/memory/pending-actions.md"
         # Note: learnings extraction is handled by deep_absorb.py to avoid duplicates
@@ -166,7 +175,7 @@ DEFER: <描述，等人确认>
 
 只输出以上格式。"
 
-        EXEC_RESULT=$(claude -p "$EXEC_PROMPT" \
+        EXEC_RESULT=$(gtimeout $CLAUDE_TIMEOUT claude -p "$EXEC_PROMPT" \
             --allowedTools "Bash,Read,Write,Edit" \
             2>> "$LOG_FILE")
         log "Auto-evolution result: $EXEC_RESULT"

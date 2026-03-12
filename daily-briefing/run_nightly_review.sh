@@ -2,7 +2,19 @@
 # Nightly Self-Review: audit knowledge base quality, clean low-value entries, update memory
 # Cron: 11pm PST = 3pm Beijing next day (low-activity window)
 
-set -uo pipefail
+set -o pipefail
+
+# Global timeout: kill entire script after 30 minutes to prevent zombie processes
+SCRIPT_TIMEOUT=1800
+( sleep $SCRIPT_TIMEOUT && kill -TERM $$ 2>/dev/null ) &
+WATCHDOG_PID=$!
+trap "kill $WATCHDOG_PID 2>/dev/null" EXIT
+
+# Per-command timeout for claude calls (5 minutes each)
+CLAUDE_TIMEOUT=300
+claude_with_timeout() {
+    gtimeout $CLAUDE_TIMEOUT claude "$@"
+}
 
 PROJECT_DIR="/Users/tuanyou/Happycode2026"
 LOGS_DIR="$PROJECT_DIR/daily-briefing/logs"
@@ -48,7 +60,7 @@ $(echo -e "$ARTICLE_LIST")
 
 只输出以上内容，不要其他解释。"
 
-REVIEW=$(claude -p "$REVIEW_PROMPT" 2>> "$LOG_FILE")
+REVIEW=$(claude_with_timeout -p "$REVIEW_PROMPT" 2>> "$LOG_FILE")
 log "Review result: $REVIEW"
 
 # Step 2: Auto-delete articles marked for deletion (only if explicitly tagged)
@@ -56,8 +68,14 @@ echo "$REVIEW" | grep "^DELETE:" | while read -r line; do
     FNAME=$(echo "$line" | sed 's/^DELETE: //' | cut -d'|' -f1 | tr -d ' ')
     FPATH=$(find "$VAULT_DIR" -name "$FNAME" -type f 2>/dev/null | head -1)
     if [ -n "$FPATH" ] && [ -f "$FPATH" ]; then
-        mv "$FPATH" "$VAULT_DIR/.trash/" 2>/dev/null || mkdir -p "$VAULT_DIR/.trash" && mv "$FPATH" "$VAULT_DIR/.trash/"
-        log "Moved to trash: $FNAME"
+        mkdir -p "$VAULT_DIR/.trash"
+        if mv "$FPATH" "$VAULT_DIR/.trash/" 2>/dev/null; then
+            log "Moved to trash: $FNAME"
+        else
+            log "Failed to move: $FNAME (skipping)"
+        fi
+    else
+        log "File not found, skipping: $FNAME"
     fi
 done
 
@@ -70,7 +88,7 @@ for MEM_FILE in "$VAULT_DIR/memory/decisions.md" "$VAULT_DIR/memory/learnings.md
             COMPRESS_PROMPT="压缩以下记忆文件，保留最重要的信息，删除过时或重复内容。保持相同的 Markdown 格式。输出压缩后的完整文件内容。
 
 $(cat "$MEM_FILE")"
-            COMPRESSED=$(claude -p "$COMPRESS_PROMPT" 2>> "$LOG_FILE")
+            COMPRESSED=$(claude_with_timeout -p "$COMPRESS_PROMPT" 2>> "$LOG_FILE")
             if [ -n "$COMPRESSED" ] && [ ${#COMPRESSED} -gt 100 ]; then
                 cp "$MEM_FILE" "${MEM_FILE}.bak"
                 echo "$COMPRESSED" > "$MEM_FILE"
@@ -148,7 +166,7 @@ HUMAN: <需要人工处理的问题>
 如果没有可分析的，输出: NO_ISSUES
 只输出以上格式。"
 
-            ERROR_ANALYSIS=$(claude -p "$ERROR_PROMPT" 2>> "$LOG_FILE")
+            ERROR_ANALYSIS=$(claude_with_timeout -p "$ERROR_PROMPT" 2>> "$LOG_FILE")
             log "Error analysis: $ERROR_ANALYSIS"
 
             # Save analysis results
@@ -194,7 +212,7 @@ $(cat "$VAULT_DIR/memory/tools.md" 2>/dev/null | head -80)
 如果没有建议，输出: NO_ACTION
 只输出以上内容。"
 
-TOOL_RESULT=$(claude -p "$TOOL_SCAN_PROMPT" 2>> "$LOG_FILE")
+TOOL_RESULT=$(claude_with_timeout -p "$TOOL_SCAN_PROMPT" 2>> "$LOG_FILE")
 log "Tool scan result: $TOOL_RESULT"
 
 # Save tool suggestions to pending-actions if any
