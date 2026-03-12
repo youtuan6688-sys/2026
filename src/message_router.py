@@ -80,6 +80,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self._music_handler = None
         self._image_handler = None
         self._video_handler = None
+        self._workspace_handler = None
 
     # ── Feature Handlers (lazy init) ──
 
@@ -101,11 +102,22 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             self._video_handler = VideoHandler(self.sender)
         return self._video_handler
 
-    # Video analysis group — auto-analyze video URLs in this group
-    _VIDEO_GROUP_ID = "oc_d42807f92f606dc0b448f16c6c42fece"
+    def _get_workspace_handler(self):
+        if self._workspace_handler is None:
+            from src.workspace_handler import WorkspaceHandler
+            self._workspace_handler = WorkspaceHandler(
+                self.sender, self.contacts, self.gate,
+            )
+        return self._workspace_handler
+
+    # Video analysis groups — auto-analyze video URLs dropped in these groups
+    _VIDEO_GROUP_IDS = frozenset((
+        "oc_d42807f92f606dc0b448f16c6c42fece",  # 爆款视频拆解实验室 (旧)
+        "oc_494f1c2a811f65378639269461ba312f",  # 爆款视频拆解 (新·陈维玺)
+    ))
 
     def _is_video_group(self, chat_id: str) -> bool:
-        return chat_id == self._VIDEO_GROUP_ID
+        return chat_id in self._VIDEO_GROUP_IDS
 
     # ══════════════════════════════════════
     # ── Main Entry Point ──
@@ -251,6 +263,17 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
+            return
+        if stripped.startswith("/work"):
+            if self._is_video_group(sender_id):
+                task_text = stripped[5:].strip() if len(stripped) > 5 else ""
+                self._get_workspace_handler().handle_work(
+                    task_text, sender_id, user_id,
+                )
+            else:
+                self.sender.send_text(
+                    sender_id, "/work 命令仅限视频拆解群使用 🔒"
+                )
             return
 
         # URLs → music detection + video auto-analyze + knowledge base save

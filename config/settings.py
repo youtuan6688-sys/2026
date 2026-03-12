@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Gemini
     gemini_api_key: str = ""
 
+    # Brave Search
+    brave_api_key: str = ""
+
     # Feishu user
     feishu_user_open_id: str = ""
 
@@ -35,7 +38,8 @@ class Settings(BaseSettings):
     group_chat_ids: list[str] = [
         "oc_4f17f731a0a3bf9489c095c26be6dedc",
         "oc_d7120356187aed1e651863428e55ab47",
-        "oc_d42807f92f606dc0b448f16c6c42fece",  # 爆款视频拆解实验室
+        "oc_d42807f92f606dc0b448f16c6c42fece",  # 爆款视频拆解实验室 (旧)
+        "oc_494f1c2a811f65378639269461ba312f",  # 爆款视频拆解 (新·陈维玺)
     ]
 
     model_config = {"env_file": str(PROJECT_ROOT / ".env"), "env_file_encoding": "utf-8"}

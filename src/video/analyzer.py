@@ -14,8 +14,9 @@ from src.video.models import VideoInfo, BreakdownResult
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-2.5-flash"
-PROMPT_PATH = Path("/Users/tuanyou/Happycode2026/projects/viral-video-analyzer/prompts/video_breakdown.md")
-TREND_PROMPT_PATH = Path("/Users/tuanyou/Happycode2026/projects/viral-video-analyzer/prompts/trend_analysis.md")
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+PROMPT_PATH = _PROJECT_ROOT / "projects" / "video-breakdown" / "prompts" / "video_breakdown.md"
+TREND_PROMPT_PATH = _PROJECT_ROOT / "projects" / "video-breakdown" / "prompts" / "trend_analysis.md"
 
 # Gemini File API: free tier 2GB storage, files expire after 48h
 MAX_UPLOAD_SIZE_MB = 100
