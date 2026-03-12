@@ -81,6 +81,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self._image_handler = None
         self._video_handler = None
         self._workspace_handler = None
+        self._ecom_handler = None
 
     # ── Feature Handlers (lazy init) ──
 
@@ -109,6 +110,12 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
                 self.sender, self.contacts, self.gate,
             )
         return self._workspace_handler
+
+    def _get_ecom_handler(self):
+        if self._ecom_handler is None:
+            from src.ecom.handler import EcomHandler
+            self._ecom_handler = EcomHandler(self.sender, self.bitable_manager)
+        return self._ecom_handler
 
     # Video analysis groups — auto-analyze video URLs dropped in these groups
     _VIDEO_GROUP_IDS = frozenset((
@@ -290,6 +297,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         if stripped.startswith("/image"):
             self._get_image_handler().handle_command(stripped, sender_id)
             return
+        if stripped.startswith("/ecom"):
+            self._get_ecom_handler().handle_command(stripped, sender_id)
+            return
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
             return
@@ -460,6 +470,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/image"):
             self._get_image_handler().handle_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/ecom"):
+            self._get_ecom_handler().handle_command(stripped, sender_id)
             return True
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
