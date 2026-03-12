@@ -147,11 +147,15 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
 
         if not stripped:
             # Group @mention with no text and no reply context → friendly nudge
+            logger.info(f"Empty text after stripping, chat_type={chat_type}, sender={sender_id}")
             if chat_type == "group":
-                self.sender.send_text(
-                    sender_id,
-                    "叫我干嘛？直接说事儿，或者发 /help 看看我能干啥 😏",
-                )
+                try:
+                    self.sender.send_text(
+                        sender_id,
+                        "叫我干嘛？直接说事儿，或者发 /help 看看我能干啥 😏",
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send nudge in router: {e}", exc_info=True)
             return
 
         # File message handling

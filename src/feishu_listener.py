@@ -158,7 +158,20 @@ def start_listener(settings, message_handler_callback, feishu_sender=None):
                 # Remove @mention placeholders (e.g., @_user_1)
                 for key in mention_keys:
                     text = text.replace(key, "").strip()
-                logger.info(f"Received text [{chat_type}] from {sender_id}: {text[:100]}")
+                logger.info(f"Received text [{chat_type}] from {sender_id}: {text[:100] if text else '(empty after @mention removal)'}")
+
+                # Fast path: group @mention with no text and no reply context → nudge
+                if not text and chat_type == "group" and not getattr(msg, "parent_id", None):
+                    if feishu_sender:
+                        try:
+                            feishu_sender.send_text(reply_id, "叫我干嘛？直接说事儿，或者发 /help 看看我能干啥 😏")
+                            logger.info(f"Sent empty-@-mention nudge to {reply_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to send nudge: {e}", exc_info=True)
+                    else:
+                        logger.warning("No feishu_sender for nudge, falling through to handler")
+                    return
+
                 threading.Thread(
                     target=_dispatch,
                     args=(reply_id, text, msg, chat_type, sender_id),
