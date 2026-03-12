@@ -142,32 +142,14 @@ echo ""
 echo "--- Step 6: 环境变量 ---"
 
 if [ ! -f "$PROJECT_DIR/.env" ]; then
-    cat > "$PROJECT_DIR/.env" << 'ENVTEMPLATE'
-# ===== 飞书 App =====
-FEISHU_APP_ID=cli_xxxxxxxxxxxx
-FEISHU_APP_SECRET=your_feishu_app_secret_here
-FEISHU_ENCRYPT_KEY=
-FEISHU_VERIFICATION_TOKEN=
-FEISHU_USER_OPEN_ID=ou_xxxxxxxxxxxx
-
-# ===== AI API (Deepseek) =====
-AI_API_KEY=sk-your_deepseek_api_key_here
-AI_BASE_URL=https://api.deepseek.com
-AI_MODEL=deepseek-chat
-
-# ===== Gemini API =====
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# ===== Brave Search API =====
-BRAVE_API_KEY=your_brave_api_key_here
-
-# ===== Paths =====
-VAULT_PATH=__VAULT_PATH__
-LOG_LEVEL=INFO
-ENVTEMPLATE
-    # Replace vault path placeholder
-    sed -i '' "s|__VAULT_PATH__|$PROJECT_DIR/vault|" "$PROJECT_DIR/.env"
-    warn ".env 模板已创建 — 请编辑填入你的 API Keys!"
+    if [ -f "$PROJECT_DIR/.env.example" ]; then
+        cp "$PROJECT_DIR/.env.example" "$PROJECT_DIR/.env"
+        # Replace vault path placeholder with actual path
+        sed -i '' "s|/Users/YOUR_USERNAME/Happycode2026/vault|$PROJECT_DIR/vault|" "$PROJECT_DIR/.env"
+        warn ".env 已从 .env.example 复制 — 请编辑填入你的 API Keys!"
+    else
+        fail ".env.example 不存在，请检查项目是否完整"
+    fi
 else
     log ".env 已存在"
 fi
@@ -215,13 +197,12 @@ if [ ! -f ~/.claude/settings.json ]; then
 {
   "permissions": {
     "deny": ["Bash(rm -rf /*)", "Bash(rm -rf ~/)"],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "allowEdits"
   },
-  "hasTrustDialogAccepted": true,
-  "skipDangerousModePermissionPrompt": true
+  "hasTrustDialogAccepted": true
 }
 SETTINGSEOF
-    log "~/.claude/settings.json 创建完成"
+    log "~/.claude/settings.json 创建完成（安全模式: allowEdits）"
 else
     log "~/.claude/settings.json 已存在"
 fi
@@ -236,13 +217,19 @@ mkdir -p "$AGENTS_DIR"
 
 install_plist() {
     local name="$1"
-    local program="$2"
     local hour="$3"
     local minute="$4"
     local keep_alive="${5:-false}"
     local logbase="${6:-$PROJECT_DIR/logs/$name}"
-
     local plist_path="$AGENTS_DIR/com.happycode.${name}.plist"
+
+    # Build ProgramArguments array from remaining positional args in $2
+    # $2 is a space-separated list of program arguments
+    local prog_args=""
+    for arg in $2; do
+        prog_args="${prog_args}
+        <string>${arg}</string>"
+    done
 
     if [ "$keep_alive" = "true" ]; then
         cat > "$plist_path" << PLISTEOF
@@ -252,7 +239,8 @@ install_plist() {
 <dict>
     <key>Label</key><string>com.happycode.${name}</string>
     <key>ProgramArguments</key>
-    <array>${program}</array>
+    <array>${prog_args}
+    </array>
     <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
@@ -274,7 +262,8 @@ PLISTEOF
 <dict>
     <key>Label</key><string>com.happycode.${name}</string>
     <key>ProgramArguments</key>
-    <array>${program}</array>
+    <array>${prog_args}
+    </array>
     <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
     <key>StartCalendarInterval</key>
     <dict><key>Hour</key><integer>${hour}</integer><key>Minute</key><integer>${minute}</integer></dict>
@@ -297,36 +286,36 @@ PLISTEOF
 
 # 主服务 (keep-alive)
 install_plist "knowledge" \
-    "<string>$PYTHON</string><string>-m</string><string>src.main</string>" \
+    "$PYTHON -m src.main" \
     0 0 true "$PROJECT_DIR/logs/service"
 
 # 定时任务
 install_plist "daily-briefing" \
-    "<string>$PROJECT_DIR/daily-briefing/run_briefing.sh</string>" \
+    "$PROJECT_DIR/daily-briefing/run_briefing.sh" \
     15 0 false "$PROJECT_DIR/daily-briefing/logs/briefing-launchd"
 
 install_plist "nightly-review" \
-    "<string>/bin/bash</string><string>$PROJECT_DIR/daily-briefing/run_nightly_review.sh</string>" \
+    "/bin/bash $PROJECT_DIR/daily-briefing/run_nightly_review.sh" \
     23 0
 
 install_plist "daily-evolution" \
-    "<string>/bin/bash</string><string>$PROJECT_DIR/scripts/run_daily_evolution.sh</string>" \
+    "/bin/bash $PROJECT_DIR/scripts/run_daily_evolution.sh" \
     16 0
 
 install_plist "group-summary" \
-    "<string>/bin/bash</string><string>$PROJECT_DIR/scripts/run_group_report.sh</string>" \
+    "/bin/bash $PROJECT_DIR/scripts/run_group_report.sh" \
     6 0
 
 install_plist "hot-briefing" \
-    "<string>$PYTHON</string><string>$PROJECT_DIR/src/daily_hot_briefing.py</string>" \
+    "$PYTHON $PROJECT_DIR/src/daily_hot_briefing.py" \
     14 30
 
 install_plist "weekly-synthesis" \
-    "<string>$PYTHON</string><string>$PROJECT_DIR/scripts/weekly_synthesis.py</string>" \
+    "$PYTHON $PROJECT_DIR/scripts/weekly_synthesis.py" \
     23 3
 
 install_plist "video-crawl" \
-    "<string>/bin/bash</string><string>$PROJECT_DIR/scripts/daily_video_crawl.sh</string>" \
+    "/bin/bash $PROJECT_DIR/scripts/daily_video_crawl.sh" \
     13 0
 
 log "所有 launchd 服务安装完成"

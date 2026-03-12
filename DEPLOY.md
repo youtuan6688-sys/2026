@@ -52,9 +52,11 @@
 
 ```bash
 cd ~
-git clone https://github.com/YOUR_USERNAME/Happycode2026.git
+git clone https://github.com/tuanyou/Happycode2026.git
 cd Happycode2026
 ```
+
+> **注意**：如果仓库是 private 的，你需要先 `gh auth login` 登录 GitHub。
 
 ---
 
@@ -269,13 +271,15 @@ cat > ~/.claude/settings.json << 'SETTINGS'
       "Bash(rm -rf /*)",
       "Bash(rm -rf ~/)"
     ],
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "allowEdits"
   },
-  "hasTrustDialogAccepted": true,
-  "skipDangerousModePermissionPrompt": true
+  "hasTrustDialogAccepted": true
 }
 SETTINGS
 ```
+
+> **安全说明**：`allowEdits` 模式允许 Claude 读写文件和运行安全命令，但危险操作会弹确认。
+> 如果你完全信任 Claude（比如个人开发机），可改为 `bypassPermissions`。
 
 ### 7c. Claude Code 规则文件
 
@@ -383,7 +387,10 @@ cat > ~/Happycode2026/.mcp.json << 'MCP'
 MCP
 ```
 
-> **注意**：MCP 中的 API KEY 占位符需要替换成你 `.env` 中对应的值。
+> **注意**：
+> - MCP 中的 `YOUR_*` 占位符需要替换成你 `.env` 中对应的值
+> - `YOUR_USERNAME` 替换为你的 macOS 用户名
+> - `happycode-knowledge` MCP server 的 `cwd` 路径也需要替换
 
 ---
 
