@@ -67,17 +67,38 @@ def _build_result_fields(video: ScrapedVideo, analysis: dict, keyword: str) -> d
         # 完整拆解截断到 10000 字符（Bitable 文本字段限制）
         full_breakdown = str(analysis.get("full_breakdown", ""))[:10000]
 
+        # 核心USP：加上一句话总结
+        usp = str(analysis.get("core_usp", ""))
+        summary = str(analysis.get("one_sentence_summary", ""))
+        if summary and summary != usp:
+            usp = f"{usp}\n\n爆款原因：{summary}"
+
+        # 场景分析：拼入音频分析
+        scene = str(analysis.get("scene_analysis", ""))
+        audio = str(analysis.get("audio_analysis", ""))
+        if audio:
+            scene = f"{scene}\n\n音频：{audio}"
+
+        # 套用建议：拼入文案亮点
+        suggestion = str(analysis.get("apply_suggestion", ""))
+        copywriting = str(analysis.get("copywriting_highlights", ""))
+        hook_detail = str(analysis.get("hook_detail", ""))
+        if hook_detail:
+            suggestion = f"Hook分析：{hook_detail}\n\n{suggestion}"
+        if copywriting:
+            suggestion = f"{suggestion}\n\n文案亮点：{copywriting}"
+
         fields.update({
             "Hook类型": str(analysis.get("hook_type", "其他")),
             "Hook评分": _safe_int(analysis.get("hook_score")),
             "叙事结构": str(analysis.get("narrative_structure", "其他")),
-            "核心USP": str(analysis.get("core_usp", "")),
+            "核心USP": usp,
             "目标人群": str(analysis.get("target_audience", "")),
-            "场景分析": str(analysis.get("scene_analysis", "")),
+            "场景分析": scene,
             "说服机制": mechanisms,
             "可复用性(1-10)": _safe_int(analysis.get("reusability_score")),
             "综合评分(1-10)": _safe_int(analysis.get("overall_score")),
-            "套用建议": str(analysis.get("apply_suggestion", "")),
+            "套用建议": suggestion,
             "完整拆解": full_breakdown,
         })
 
