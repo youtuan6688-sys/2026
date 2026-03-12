@@ -26,7 +26,14 @@ UPLOAD_TIMEOUT = 120
 def _get_client() -> genai.Client:
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
-        raise ValueError("GEMINI_API_KEY not set")
+        # Fallback: read from pydantic settings (which loads .env)
+        try:
+            from config.settings import settings
+            api_key = getattr(settings, "gemini_api_key", "")
+        except Exception as e:
+            logger.warning(f"Could not load GEMINI_API_KEY from settings: {e}")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set — check .env or environment")
     return genai.Client(api_key=api_key)
 
 

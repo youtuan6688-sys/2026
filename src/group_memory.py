@@ -36,9 +36,14 @@ NOISE_PATTERNS = [
 
 
 def is_noise(text: str) -> bool:
-    """Check if a message is low-information noise."""
+    """Check if a message is low-information noise.
+
+    Filters: empty strings, emoji-only, filler chars (哈嗯嘻…),
+    short affirmations (+1/ok/好的/收到…), and [sticker] markers.
+    Single-char meaningful messages (好/行) are NOT filtered by length.
+    """
     text = text.strip()
-    if len(text) < 3:
+    if not text:
         return True
     for pattern in NOISE_PATTERNS:
         if pattern.match(text):

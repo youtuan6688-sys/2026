@@ -138,7 +138,8 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         # Quoted/reply message
         parent_id = getattr(raw_message, "parent_id", None) if raw_message else None
         if parent_id:
-            if self._handle_quoted_message(sender_id, stripped, parent_id, chat_type, sender_open_id):
+            root_id = getattr(raw_message, "root_id", None)
+            if self._handle_quoted_message(sender_id, stripped, parent_id, chat_type, sender_open_id, root_id=root_id):
                 return
 
         # Resolve actual user
@@ -172,8 +173,13 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
 
     def _handle_quoted_message(self, sender_id: str, stripped: str,
                                parent_id: str, chat_type: str,
-                               sender_open_id: str) -> bool:
-        """Handle quoted/reply messages. Returns True if handled."""
+                               sender_open_id: str, *,
+                               root_id: str | None = None) -> bool:
+        """Handle quoted/reply messages. Returns True if handled.
+
+        When root_id differs from parent_id, fetches the thread root
+        to provide richer conversation context.
+        """
         if self._handle_quoted_file(sender_id, stripped, parent_id, chat_type, sender_open_id):
             return True
 
@@ -183,6 +189,16 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return False
 
         logger.info(f"Quoted text prepended: {quoted_text[:80]}")
+
+        # Thread context: if root differs from parent, fetch root for full picture
+        thread_context = ""
+        if root_id and root_id != parent_id:
+            root_text = self._extract_quoted_text(root_id)
+            if root_text:
+                # Sanitize: strip bracket-prefixed injections from user content
+                root_text_safe = root_text.lstrip().removeprefix("[").removeprefix("]")
+                thread_context = f"[话题起始消息] {root_text_safe[:300]}\n\n"
+                logger.info(f"Thread root added: {root_text_safe[:60]}")
 
         # Check if quoted text contains URLs — fetch content first
         quoted_urls = extract_urls(quoted_text)
@@ -198,6 +214,8 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
 
         if fetched_context:
             enriched = (
+                f"{thread_context}"
+                f"[引用消息] {quoted_text}\n\n"
                 f"[引用消息中的文章内容]\n{fetched_context}\n\n"
                 f"用户问题: {stripped}"
             )
@@ -205,12 +223,13 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             history_context = self._search_conversation_history(quoted_text[:200])
             if history_context:
                 enriched = (
+                    f"{thread_context}"
                     f"[引用消息] {quoted_text}\n\n"
                     f"{history_context}\n\n"
                     f"用户回复: {stripped}"
                 )
             else:
-                enriched = f"[引用消息] {quoted_text}\n\n用户回复: {stripped}"
+                enriched = f"{thread_context}[引用消息] {quoted_text}\n\n用户回复: {stripped}"
 
         user_id = sender_open_id or sender_id
         self.contacts.touch(user_id)
