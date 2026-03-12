@@ -9,3 +9,6 @@ vault/.obsidian/
 .claude/
 .coverage
 vault/
+bot.log
+daily-briefing/reports/
+devices/*/assets/
