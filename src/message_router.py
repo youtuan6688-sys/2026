@@ -152,6 +152,9 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         if self._TODO_PATTERNS.search(t):
             return "todo"
         if self._LOOP_PATTERNS.search(t):
+            # Long messages with task/research verbs are complex requests, not loop commands
+            if len(t) > 50 and re.search(r"(去.*学|学习|研究|了解|调用|怎么用|如何|做.*图|出图|交付)", t):
+                return "query"
             return "loop"
         if self._SESSION_PATTERNS.search(t):
             return "session"
