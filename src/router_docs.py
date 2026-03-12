@@ -104,7 +104,9 @@ class DocsMixin:
             "--- 多维表格操作 ---\n"
             '- 创建多维表格: {"action":"bt_create","name":"表格名称"}\n'
             '- 查看表格列表: {"action":"bt_tables","app_token":"多维表格链接或token"}\n'
+            '- 查看字段/列: {"action":"bt_fields","app_token":"token","table_id":"tblXXX"}\n'
             '- 读取记录: {"action":"bt_read","app_token":"token","table_id":"可选"}\n'
+            '- 搜索记录: {"action":"bt_search","app_token":"token","table_id":"tblXXX","field_name":"字段名","operator":"contains/is/isNot/isEmpty/isNotEmpty/isGreater/isLess","value":["搜索值"]}\n'
             '- 新增记录: {"action":"bt_add","app_token":"token","table_id":"tblXXX","fields":{"字段":"值"}}\n'
             '- 更新记录: {"action":"bt_update","app_token":"token","table_id":"tblXXX","record_id":"recXXX","fields":{"字段":"新值"}}\n'
             '- 删除记录: {"action":"bt_delete","app_token":"token","table_id":"tblXXX","record_id":"recXXX"}\n'
@@ -136,7 +138,9 @@ class DocsMixin:
                     "📋 多维表格 (bitable)\n"
                     "• 创建表格 — 「创建一个多维表格叫XX」\n"
                     "• 查看数据表 — 「看看这个多维表格有哪些表 <链接>」\n"
+                    "• 查看字段 — 「这个表有哪些字段/列 <链接>」\n"
                     "• 读取记录 — 「读一下这个多维表格的数据 <链接>」\n"
+                    "• 搜索记录 — 「在多维表格里搜索 状态=进行中 的记录」\n"
                     "• 新增记录 — 「往多维表格里加一条：姓名=张三, 年龄=28」\n"
                     "• 更新/删除记录 — 需提供 record_id\n\n"
                     "📊 电子表格 (sheet)\n"
@@ -255,6 +259,57 @@ class DocsMixin:
                     )
                 else:
                     self.sender.send_text(sender_id, "未找到数据表，请检查链接或权限")
+
+            elif action == "bt_fields":
+                app_token = parsed.get("app_token", "")
+                table_id = parsed.get("table_id", "")
+                if not app_token:
+                    self.sender.send_text(sender_id, "请提供多维表格链接或 app_token")
+                    return
+                # If no table_id, use first table
+                if not table_id:
+                    tables = self.bitable_manager.list_tables(app_token)
+                    if not tables:
+                        self.sender.send_text(sender_id, "未找到数据表")
+                        return
+                    table_id = tables[0]["table_id"]
+                    table_name = tables[0]["name"]
+                else:
+                    table_name = table_id
+                fields = self.bitable_manager.list_fields(app_token, table_id)
+                formatted = self.bitable_manager.format_fields(fields)
+                self._send_long_text(
+                    sender_id,
+                    f"数据表「{table_name}」的字段 ({len(fields)} 个):\n\n{formatted}",
+                )
+
+            elif action == "bt_search":
+                app_token = parsed.get("app_token", "")
+                table_id = parsed.get("table_id", "")
+                field_name = parsed.get("field_name", "")
+                operator = parsed.get("operator", "contains")
+                value = parsed.get("value", [])
+                if not app_token or not table_id or not field_name:
+                    self.sender.send_text(
+                        sender_id,
+                        "搜索需要: app_token, table_id, field_name\n"
+                        "例: 「在多维表格 bascnXXX 的表 tblXXX 里搜索 状态=进行中 的记录」",
+                    )
+                    return
+                if isinstance(value, str):
+                    value = [value]
+                result = self.bitable_manager.search_records(
+                    app_token, table_id, field_name, operator, value,
+                )
+                records = result.get("records", [])
+                formatted = self.bitable_manager.format_records(records)
+                total = result.get("total", len(records))
+                has_more = result.get("has_more", False)
+                more_text = f"\n\n(共 {total} 条，显示前 {len(records)} 条)" if has_more else ""
+                self._send_long_text(
+                    sender_id,
+                    f"搜索结果 ({field_name} {operator} {value}):\n\n{formatted}{more_text}",
+                )
 
             elif action == "bt_read":
                 app_token = parsed.get("app_token", "")
