@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-03-11 (晚) | 记忆修复 + 引用增强 + ADB 视频录屏
+
+### 完成
+- [x] 陈维玺联系人档案填充（nickname 陈总, traits, notes）
+- [x] 新视频群种子记忆（5 条 observations）
+- [x] `_KNOWN_CHATS` 加入两个视频群 ID（用户名解析 fallback）
+- [x] noise filter 放宽：`len(text) < 3` → `not text`，不再误杀单字中文
+- [x] 引用回复增强：提取 `root_id` 获取 thread 起始消息，提供完整对话上下文
+- [x] GEMINI_API_KEY fallback 到 pydantic settings（修复 launchd 环境变量缺失）
+- [x] 群人设更新：加入视频拆解和工作区能力说明
+- [x] `_format_report` bug fix：metrics 值为字符串时格式化崩溃
+- [x] **ADB+scrcpy fallback 下载方案**：抖音 yt-dlp 需要 cookies → 自动用手机录屏
+
+### ADB 视频录屏流程（`src/video/downloader.py`）
+```
+抖音链接 → yt-dlp 尝试下载 → 失败（需 cookies）
+  → _adb_record_video() fallback:
+    1. curl 解析短链 → 提取 video_id
+    2. ADB deeplink: snssdk1128://aweme/detail/{id} 打开手机抖音
+    3. sleep 4s 等视频加载
+    4. scrcpy --no-playback --no-audio --record=output.mp4 --max-size=720 --time-limit={duration+8}
+    5. ffmpeg 裁掉前 3s 打开动画，输出干净视频
+    6. → 送 Gemini 做 🎬 视频画面+音频分析
+```
+- 依赖：ADB 连接的 Android 手机（OPPO PDYM20）+ 已安装抖音 + scrcpy + ffmpeg
+- 限制：录屏包含手机 UI（状态栏、抖音按钮），但 Gemini 能忽略
+- 韩束视频实测：录屏 55s → 裁剪 13MB → Gemini 分析钩子强度 9/10 ✅
+
+### 关键决策
+- **引用回复 root_id**：仅在 `root_id != parent_id` 时才额外请求，零开销无副作用
+- **root_text 消毒**：strip 前导 `[` `]` 防 prompt injection
+- **ADB fallback 仅限 douyin/xiaohongshu**：其他平台 yt-dlp 工作正常
+- **录屏不去音频**：`--no-audio` 因为手机可能静音，Gemini 主要看画面
+
+### 上下文指针
+- 引用增强: `src/message_router.py:140-230`（root_id 提取 + _handle_quoted_message）
+- ADB 录屏: `src/video/downloader.py:136-231`（_adb_record_video + helpers）
+- format bug fix: `src/video/handler.py:225-234`（metrics int() 转换）
+
+---
+
 ## 2026-03-11 | 项目重组 + 工作区系统
 
 ### 完成
