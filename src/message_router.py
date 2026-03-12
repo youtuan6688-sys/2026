@@ -127,20 +127,30 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
                        chat_type: str = "p2p", sender_open_id: str = ""):
         """Route messages with smart intent detection."""
         stripped = text.strip()
+
+        # Quoted/reply message — check BEFORE empty-text guard so that
+        # "@bot" replies to a previous message still get context-aware handling
+        parent_id = getattr(raw_message, "parent_id", None) if raw_message else None
+        if parent_id:
+            root_id = getattr(raw_message, "root_id", None)
+            # For empty text replies, set a default prompt so Claude knows to continue
+            reply_text = stripped or "继续"
+            if self._handle_quoted_message(sender_id, reply_text, parent_id, chat_type, sender_open_id, root_id=root_id):
+                return
+
         if not stripped:
+            # Group @mention with no text and no reply context → friendly nudge
+            if chat_type == "group":
+                self.sender.send_text(
+                    sender_id,
+                    "叫我干嘛？直接说事儿，或者发 /help 看看我能干啥 😏",
+                )
             return
 
         # File message handling
         if stripped.startswith("[file_msg:"):
             self._handle_file_message(sender_id, stripped, chat_type, sender_open_id)
             return
-
-        # Quoted/reply message
-        parent_id = getattr(raw_message, "parent_id", None) if raw_message else None
-        if parent_id:
-            root_id = getattr(raw_message, "root_id", None)
-            if self._handle_quoted_message(sender_id, stripped, parent_id, chat_type, sender_open_id, root_id=root_id):
-                return
 
         # Resolve actual user
         user_id = sender_open_id or sender_id
