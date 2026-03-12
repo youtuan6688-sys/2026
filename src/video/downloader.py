@@ -1,7 +1,8 @@
-"""Video downloader using yt-dlp. Supports douyin, xiaohongshu, bilibili, youtube."""
+"""Video downloader using yt-dlp with ADB+scrcpy fallback for cookie-gated platforms."""
 
 import json
 import logging
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -11,10 +12,16 @@ from src.video.models import VideoInfo
 logger = logging.getLogger(__name__)
 
 YT_DLP = "/opt/homebrew/bin/yt-dlp"
+SCRCPY = "/opt/homebrew/bin/scrcpy"
+ADB = "/opt/homebrew/bin/adb"
 DOWNLOAD_DIR = Path("/Users/tuanyou/Happycode2026/data/video_raw")
 MAX_DURATION = 600       # 10 min
 MAX_FILE_SIZE_MB = 100   # Gemini File API limit
 PREFERRED_FORMAT = "bestvideo[height<=720]+bestaudio/best[height<=720]/best"
+
+# Douyin deeplink: snssdk1128://aweme/detail/{video_id}
+_DOUYIN_ID_RE = re.compile(r"/video/(\d+)")
+_DOUYIN_SHORT_RE = re.compile(r"v\.douyin\.com/\S+")
 
 # Platform-specific yt-dlp options
 _PLATFORM_OPTS: dict[str, list[str]] = {
@@ -78,6 +85,15 @@ def download(url: str, platform: str = "generic") -> VideoInfo:
     except Exception as e:
         logger.error(f"Download error: {e}")
 
+    # Fallback: ADB screen-record for platforms that need cookies
+    if not info.video_path and platform in ("douyin", "xiaohongshu"):
+        logger.info(f"yt-dlp failed, trying ADB+scrcpy fallback for {platform}")
+        adb_path = _adb_record_video(url, info.duration or 60)
+        if adb_path:
+            info.video_path = str(adb_path)
+            info.file_size_mb = round(adb_path.stat().st_size / (1024 * 1024), 1)
+            logger.info(f"ADB fallback succeeded: {adb_path.name} ({info.file_size_mb}MB)")
+
     return info
 
 
@@ -131,6 +147,104 @@ def _find_downloaded_file(info: VideoInfo, output_template: str) -> Path | None:
             if time.time() - f.stat().st_mtime < 300:
                 return f
     return None
+
+
+def _adb_device_connected() -> bool:
+    """Check if an ADB device is connected."""
+    try:
+        result = subprocess.run(
+            [ADB, "devices"], capture_output=True, text=True, timeout=5,
+        )
+        lines = result.stdout.strip().split("\n")
+        return any("device" in line and "devices" not in line for line in lines)
+    except Exception:
+        return False
+
+
+def _resolve_douyin_video_id(url: str) -> str:
+    """Extract Douyin video ID from URL (handles short links)."""
+    m = _DOUYIN_ID_RE.search(url)
+    if m:
+        return m.group(1)
+    # Resolve short URL
+    if _DOUYIN_SHORT_RE.search(url):
+        try:
+            result = subprocess.run(
+                ["curl", "-sL", "-o", "/dev/null", "-w", "%{url_effective}", url],
+                capture_output=True, text=True, timeout=10,
+            )
+            m = _DOUYIN_ID_RE.search(result.stdout)
+            if m:
+                return m.group(1)
+        except Exception as e:
+            logger.warning(f"Failed to resolve Douyin short URL: {e}")
+    return ""
+
+
+def _adb_record_video(url: str, duration: int) -> Path | None:
+    """Fallback: open video in phone app via ADB, record screen with scrcpy.
+
+    Requires: connected Android device with Douyin installed, scrcpy on host.
+    Returns path to recorded mp4 or None.
+    """
+    if not _adb_device_connected():
+        logger.info("No ADB device connected, skipping fallback")
+        return None
+
+    # Only Douyin supported for now
+    video_id = _resolve_douyin_video_id(url)
+    if not video_id:
+        logger.warning(f"Could not extract Douyin video ID from: {url}")
+        return None
+
+    deeplink = f"snssdk1128://aweme/detail/{video_id}"
+    record_time = min(duration + 8, MAX_DURATION)  # extra buffer for load time
+    output = DOWNLOAD_DIR / f"adb_{video_id}.mp4"
+
+    try:
+        # Open video in Douyin app
+        subprocess.run(
+            [ADB, "shell", "am", "start", "-a", "android.intent.action.VIEW",
+             "-d", deeplink, "com.ss.android.ugc.aweme"],
+            capture_output=True, text=True, timeout=10,
+        )
+        time.sleep(4)  # wait for video to load
+
+        # Record screen with scrcpy (no display, video only)
+        result = subprocess.run(
+            [SCRCPY, "--no-playback", "--no-audio",
+             f"--record={output}", "--max-size=720",
+             f"--time-limit={record_time}"],
+            capture_output=True, text=True, timeout=record_time + 15,
+        )
+
+        if output.exists() and output.stat().st_size > 100_000:
+            # Trim first 3s (app transition) with ffmpeg
+            trimmed = DOWNLOAD_DIR / f"adb_{video_id}_trimmed.mp4"
+            trim_result = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(output),
+                 "-ss", "3", "-t", str(duration + 2),
+                 "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                 "-an", "-vf", "scale=720:-2", str(trimmed)],
+                capture_output=True, text=True, timeout=60,
+            )
+            output.unlink(missing_ok=True)
+            if trimmed.exists() and trimmed.stat().st_size > 50_000:
+                return trimmed
+            logger.warning(f"ffmpeg trim failed: {trim_result.stderr[:200]}")
+            return None
+
+        logger.warning(f"scrcpy recording failed or too small: {result.stderr[:200]}")
+        output.unlink(missing_ok=True)
+        return None
+
+    except subprocess.TimeoutExpired:
+        logger.error("ADB recording timed out")
+        output.unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        logger.error(f"ADB recording error: {e}")
+        return None
 
 
 def cleanup_old_videos(max_age_days: int = 7) -> int:
