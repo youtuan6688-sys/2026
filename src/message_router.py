@@ -78,6 +78,7 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         self._phase_log = self._load_phase_log()
         self._interaction_count = 0
         self._music_handler = None
+        self._image_handler = None
 
     # ── Music Handler (lazy init) ──
 
@@ -86,6 +87,14 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             from src.music.handler import MusicHandler
             self._music_handler = MusicHandler(self.sender)
         return self._music_handler
+
+    # ── Image Handler (lazy init) ──
+
+    def _get_image_handler(self):
+        if self._image_handler is None:
+            from src.image.handler import ImageHandler
+            self._image_handler = ImageHandler(self.sender)
+        return self._image_handler
 
     # ── Intent Classification (rule-based, no subprocess) ──
 
@@ -327,7 +336,9 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
             if stripped.startswith("/stock"):
                 self._handle_stock_query(stripped, sender_id)
                 return
-
+            if stripped.startswith("/image"):
+                self._get_image_handler().handle_command(stripped, sender_id)
+                return
             # Group: URL → check for music links first, then save to knowledge base
             urls = extract_urls(text)
             if urls:
@@ -444,6 +455,11 @@ class MessageRouter(ContextMixin, CommandsMixin, SessionsMixin,
         # Music command: /music <subcommand>
         if stripped.startswith("/music"):
             self._get_music_handler().handle_command(stripped, sender_id)
+            return
+
+        # Image command: /image <scene/description>
+        if stripped.startswith("/image"):
+            self._get_image_handler().handle_command(stripped, sender_id)
             return
 
         # URL mode: if message contains URLs, save them
