@@ -317,53 +317,71 @@ def _extract_video_detail(d: u2.Device, result: ScrapedVideo) -> None:
 
 
 def _extract_video_url(d: u2.Device, result: ScrapedVideo) -> None:
-    """通过分享→分享链接获取视频 URL"""
-    try:
-        share_btn = d(resourceId=f"{_RID}zs-")
-        if not share_btn.exists(timeout=2):
-            return
+    """通过分享→复制链接获取视频 URL，带重试"""
+    for attempt in range(2):
+        try:
+            share_btn = d(resourceId=f"{_RID}zs-")
+            if not share_btn.exists(timeout=2):
+                logger.warning("Share button not found")
+                return
 
-        share_btn.click()
-        time.sleep(2)
+            share_btn.click()
+            time.sleep(2)
 
-        # 找"分享链接"按钮（可能需要滑动分享面板）
-        share_link = d(text="分享链接")
-        if not share_link.exists(timeout=2):
-            # 尝试找"复制链接"
+            # 找"复制链接"或"分享链接"按钮
             share_link = d(text="复制链接")
-        if not share_link.exists(timeout=1):
-            # 滑动分享面板到右边
-            d.swipe(900, 2200, 200, 2200, 0.3)
-            time.sleep(1)
-            share_link = d(text="分享链接") or d(text="复制链接")
+            if not share_link.exists(timeout=2):
+                share_link = d(text="分享链接")
+            if not share_link.exists(timeout=1):
+                # 滑动分享面板到右边查找
+                d.swipe(900, 2200, 200, 2200, 0.3)
+                time.sleep(1)
+                share_link = d(text="复制链接")
+                if not share_link.exists(timeout=1):
+                    share_link = d(text="分享链接")
 
-        if share_link.exists(timeout=1):
-            share_link.click()
-            time.sleep(1.5)
+            if share_link.exists(timeout=1):
+                share_link.click()
+                time.sleep(2)
 
-            # 从剪贴板读取 URL
-            try:
-                clipboard = d.clipboard or ""
-                # 提取 URL
+                # 从剪贴板读取 URL
+                clipboard = ""
+                try:
+                    clipboard = d.clipboard or ""
+                except Exception:
+                    # 备用：用 adb 读剪贴板
+                    try:
+                        import subprocess as _sp
+                        clip_out = _sp.run(
+                            [ADB, "shell", "am", "broadcast", "-a", "clipper.get"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        clipboard = clip_out.stdout or ""
+                    except Exception:
+                        pass
+
                 url_match = re.search(r"https?://\S+", clipboard)
                 if url_match:
-                    result.url = url_match.group(0).rstrip("/")
+                    result.url = url_match.group(0).rstrip("/").rstrip(")")
                     logger.info(f"Got URL: {result.url}")
-            except Exception:
-                pass
+                    # 关闭可能的提示面板
+                    d.press("back")
+                    time.sleep(1)
+                    return
+                else:
+                    logger.warning(f"No URL in clipboard (attempt {attempt+1}): {clipboard[:100]}")
 
-            # 关闭分享面板（可能显示"链接已复制成功"的面板）
+                d.press("back")
+                time.sleep(1)
+            else:
+                logger.warning(f"Copy link button not found (attempt {attempt+1})")
+                d.press("back")
+                time.sleep(1)
+
+        except Exception as e:
+            logger.warning(f"Extract URL failed (attempt {attempt+1}): {e}")
             d.press("back")
             time.sleep(1)
-        else:
-            # 没找到分享链接，关闭面板
-            d.press("back")
-            time.sleep(1)
-
-    except Exception as e:
-        logger.warning(f"Extract URL failed: {e}")
-        d.press("back")
-        time.sleep(1)
 
 
 def _scrape_top_comments(d: u2.Device, top_n: int = 5) -> list[CommentData]:

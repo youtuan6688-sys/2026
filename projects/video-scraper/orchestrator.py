@@ -67,7 +67,7 @@ def _build_result_fields(video: ScrapedVideo, analysis: dict, keyword: str) -> d
         "收藏数": video.bookmarks,
         "转发数": video.shares,
         "发布时间": video.publish_date,
-        "视频链接": {"text": video.url or "链接", "link": video.url} if video.url else None,
+        "视频链接": {"link": video.url, "text": video.url} if video.url else None,
         "高赞评论": _format_comments(video.top_comments),
     }
 
