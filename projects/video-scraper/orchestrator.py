@@ -208,11 +208,11 @@ def process_task(task: dict) -> dict:
             analyzed += 1
             logger.info(f"Written to Bitable: {rid}")
 
-            # 写入逐秒拆解表
+            # 写入逐秒拆解表（关联到视频整体诊断记录）
             if analysis:
                 breakdown_rows = _build_breakdown_rows(analysis, video.title, keyword)
                 if breakdown_rows:
-                    written = write_breakdown_rows(breakdown_rows)
+                    written = write_breakdown_rows(breakdown_rows, parent_record_id=rid)
                     logger.info(f"Written {written} breakdown rows for: {video.title[:30]}")
         else:
             failed += 1
@@ -271,7 +271,7 @@ def run_once() -> None:
             f"成功分析: {total_stats['success']} 条\n"
             f"失败: {total_stats['failed']} 条\n"
             f"Gemini 用量: {total_stats['gemini_used']} (剩余 {quota.remaining})\n"
-            f"表格: https://tcn5zi1692d5.feishu.cn/base/MnbvbQqDsaot42syrwKco3TDneg"
+            f"表格: https://tcn5zi1692d5.feishu.cn/base/Op8Mb2egaakYAwstNttcnkKfnRc"
         )
         _send_feishu_notify(msg)
         logger.info(msg)

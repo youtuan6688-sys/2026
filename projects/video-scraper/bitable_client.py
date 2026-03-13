@@ -118,9 +118,13 @@ def write_result(result: dict) -> str | None:
     return data.get("data", {}).get("record", {}).get("record_id")
 
 
-def write_breakdown_rows(rows: list[dict]) -> int:
-    """批量写入逐秒拆解行，返回成功写入的数量"""
+def write_breakdown_rows(rows: list[dict], parent_record_id: str = "") -> int:
+    """批量写入逐秒拆解行，返回成功写入的数量。parent_record_id 用于关联字段「所属视频」"""
     url = f"{LARK_API_BASE}/bitable/v1/apps/{BITABLE_APP_TOKEN}/tables/{BREAKDOWN_TABLE_ID}/records/batch_create"
+    # 如果有 parent_record_id，给每行加上关联字段
+    if parent_record_id:
+        for row in rows:
+            row["所属视频"] = [parent_record_id]
     records = [{"fields": row} for row in rows]
     # Bitable 批量写入上限 500 条
     written = 0

@@ -199,7 +199,7 @@ def analyze_video(video_path: str) -> dict | None:
         _last_call_time = time.time()
         _quota.consume()
 
-        # 解析 JSON
+        # 解析 JSON — 从响应中提取第一个完整 JSON 对象
         text = response.text.strip()
         # 去掉可能的 markdown code fence
         if text.startswith("```"):
@@ -208,8 +208,11 @@ def analyze_video(video_path: str) -> dict | None:
             text = text.rsplit("```", 1)[0]
         if text.startswith("json"):
             text = text[4:]
+        text = text.strip()
 
-        result = json.loads(text.strip())
+        # 用 JSONDecoder 只解析第一个 JSON 对象，忽略尾部多余内容
+        decoder = json.JSONDecoder()
+        result, _ = decoder.raw_decode(text)
         logger.info(f"Analysis complete: score={result.get('overall_score')}, "
                      f"quota={_quota.used}/{GEMINI_DAILY_LIMIT}")
 

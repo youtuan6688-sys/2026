@@ -3,10 +3,10 @@
 from pathlib import Path
 
 # ── Bitable ──────────────────────────────────────────
-BITABLE_APP_TOKEN = "MnbvbQqDsaot42syrwKco3TDneg"
-TASK_TABLE_ID = "tbl2vrXrzJbDHksM"
-RESULT_TABLE_ID = "tblrimY09fT8JGSk"
-BREAKDOWN_TABLE_ID = "tbl3ph0hmMSqZvAm"  # 逐秒拆解表
+BITABLE_APP_TOKEN = "Op8Mb2egaakYAwstNttcnkKfnRc"
+TASK_TABLE_ID = "tblv1HcK4BnhYQGq"
+RESULT_TABLE_ID = "tblX1HAev0Cr9BCm"
+BREAKDOWN_TABLE_ID = "tblq3gsl0qhgvuct"  # 逐秒拆解表（关联字段: 所属视频）
 
 # ── Gemini ───────────────────────────────────────────
 GEMINI_MODEL = "gemini-2.5-flash"
