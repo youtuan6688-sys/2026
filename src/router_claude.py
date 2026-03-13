@@ -10,6 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from scripts.claude_runner import run_with_resume
+from src.brain_manager import BrainManager
 from src.long_task import LongTaskManager, STEP_COOLDOWN_S
 from src.utils.url_utils import extract_urls, detect_platform
 from src.parsers import get_parser
@@ -161,62 +162,42 @@ class ClaudeMixin:
 
     def _execute_claude(self, prompt: str, sender_id: str,
                         is_long_task: bool = False):
-        """Execute Claude via claude -p with RAG context and auto-resume.
+        """Execute Claude via Brain (persistent session) or subprocess fallback.
 
-        If is_long_task=True, automatically continues until task is done
-        or max steps reached.
+        Brain reuses context across messages, saving ~1500 tokens/message.
+        Falls back to run_with_resume() for long tasks or when Brain fails.
         """
         self.sender.send_text(sender_id, f"思考中... \n> {prompt[:100]}")
 
         def _run():
             ltm = LongTaskManager()
             try:
-
                 # Start long task tracking if flagged
                 if is_long_task:
                     ltm.start(prompt, sender_id)
 
-                full_prompt = self._build_full_prompt(prompt, chat_id=sender_id)
-                system_prompt = self._build_system_prompt(user_id=sender_id)
+                # ── Try Brain for simple private chat (not long tasks) ──
+                # NOTE: Brain disabled — stream-json interactive mode crashes
+                # in CLI 2.1.74. Re-enable after brain.py fix.
+                if False and not is_long_task and hasattr(self, 'brain_manager'):
+                    output = self._try_brain(prompt, sender_id)
+                    if output:
+                        self._send_long_text(sender_id, output)
+                        self._add_turn("assistant", output, chat_id=sender_id)
+                        user_id = sender_id if not sender_id.startswith("oc_") else ""
+                        user_name = self.contacts.get_name(user_id) if user_id else ""
+                        self._buffer_conversation(
+                            user_id=user_id, user_name=user_name,
+                            user_msg=prompt, bot_reply=output,
+                            chat_type="p2p",
+                        )
+                        self._maybe_extract_fact(prompt, output)
+                        return
 
-                # 私聊也注入联系人记忆（与群聊对齐）
-                if sender_id and not sender_id.startswith("oc_"):
-                    user_ctx = self.contacts.format_context(sender_id)
-                    if user_ctx:
-                        system_prompt += f"\n\n对话用户信息:\n{user_ctx}"
-
-                task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-
-                success, output = run_with_resume(
-                    full_prompt,
-                    task_id=task_id,
-                    timeout=480,
-                    max_retries=2,
-                    user_message=prompt,
-                    system_prompt=system_prompt,
+                # ── Fallback: subprocess with full context injection ──
+                self._execute_claude_subprocess(
+                    prompt, sender_id, ltm, is_long_task,
                 )
-
-                if not output:
-                    output = "(no output)"
-                self._send_long_text(sender_id, output)
-                self._add_turn("assistant", output, chat_id=sender_id)
-
-                user_id = sender_id if not sender_id.startswith("oc_") else ""
-                user_name = self.contacts.get_name(user_id) if user_id else ""
-                self._buffer_conversation(
-                    user_id=user_id, user_name=user_name,
-                    user_msg=prompt, bot_reply=output,
-                    chat_type="p2p",
-                )
-
-                # ── Long task: schedule next step outside this lock ──
-                active_task = ltm.get_active(sender_id)
-                if active_task and success and ltm.claim_step(sender_id):
-                    self._schedule_next_step(
-                        ltm, active_task, output, sender_id, system_prompt,
-                    )
-                elif active_task and not success:
-                    ltm.complete(reason="execution_failed")
 
             except Exception as e:
                 logger.error(f"Claude execution failed: {e}", exc_info=True)
@@ -224,13 +205,139 @@ class ClaudeMixin:
                     "claude_error", str(e), "execute_claude", "high", prompt[:200],
                 )
                 self.sender.send_text(sender_id, f"执行失败: {e}")
-                # Clean up long task on error
                 try:
                     ltm.complete(reason="error")
                 except Exception as inner:
                     logger.warning(f"Failed to complete long task on error: {inner}")
 
         self.gate.run_private(_run)
+
+    def _try_brain(self, prompt: str, sender_id: str) -> str | None:
+        """Try to handle message via persistent Brain session.
+
+        Returns response string on success, None on failure (caller falls back).
+        """
+        bm: BrainManager = self.brain_manager
+        if not bm.is_available:
+            # Brain not alive — let it auto-start on send()
+            pass
+
+        # Brain already has memory in its system prompt.
+        # Only add minimal context: recent history delta + user message.
+        history = self._format_history(chat_id=sender_id)
+        if history:
+            brain_prompt = f"{history}\n\n用户消息:\n{prompt}"
+        else:
+            brain_prompt = prompt
+
+        # Inject contact context on first message of session
+        if sender_id and not sender_id.startswith("oc_"):
+            user_ctx = self.contacts.format_context(sender_id)
+            if user_ctx:
+                brain_prompt = f"对话用户信息:\n{user_ctx}\n\n{brain_prompt}"
+
+        output = bm.send(brain_prompt, timeout=120)
+        if output:
+            logger.info(f"Brain handled message ({len(output)} chars)")
+        else:
+            logger.info("Brain failed, falling back to subprocess")
+        return output
+
+    def _execute_claude_subprocess(self, prompt: str, sender_id: str,
+                                   ltm: "LongTaskManager",
+                                   is_long_task: bool):
+        """Original subprocess execution path (fallback from Brain)."""
+        full_prompt = self._build_full_prompt(prompt, chat_id=sender_id)
+        system_prompt = self._build_system_prompt(user_id=sender_id, message=prompt)
+
+        # 私聊也注入联系人记忆（与群聊对齐）
+        if sender_id and not sender_id.startswith("oc_"):
+            user_ctx = self.contacts.format_context(sender_id)
+            if user_ctx:
+                system_prompt += f"\n\n对话用户信息:\n{user_ctx}"
+
+        task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+        success, output = run_with_resume(
+            full_prompt,
+            task_id=task_id,
+            timeout=900,
+            max_retries=2,
+            user_message=prompt,
+            system_prompt=system_prompt,
+        )
+
+        if not output:
+            output = "(no output)"
+        self._send_long_text(sender_id, output)
+        self._add_turn("assistant", output, chat_id=sender_id)
+
+        user_id = sender_id if not sender_id.startswith("oc_") else ""
+        user_name = self.contacts.get_name(user_id) if user_id else ""
+        self._buffer_conversation(
+            user_id=user_id, user_name=user_name,
+            user_msg=prompt, bot_reply=output,
+            chat_type="p2p",
+        )
+        self._maybe_extract_fact(prompt, output)
+
+        # ── Long task: schedule next step outside this lock ──
+        active_task = ltm.get_active(sender_id)
+        if active_task and success and ltm.claim_step(sender_id):
+            self._schedule_next_step(
+                ltm, active_task, output, sender_id, system_prompt,
+            )
+        elif active_task and not success:
+            ltm.complete(reason="execution_failed")
+
+    # ── Real-time fact extraction ──
+    _fact_counter = 0
+    _FACT_INTERVAL = 10  # Extract once every N substantive messages
+
+    def _maybe_extract_fact(self, user_msg: str, bot_reply: str):
+        """Background haiku call to extract one key learning from conversation.
+
+        Runs at most once per _FACT_INTERVAL substantive messages to control costs.
+        """
+        if len(user_msg) < 100:
+            return  # Skip trivial messages
+
+        ClaudeMixin._fact_counter += 1
+        if ClaudeMixin._fact_counter % self._FACT_INTERVAL != 0:
+            return
+
+        def _extract():
+            try:
+                import subprocess
+                from src.utils.subprocess_env import CLAUDE_PATH, safe_env
+                from pathlib import Path
+
+                prompt = (
+                    "从以下对话中提取一条值得长期记住的知识点、决策或用户偏好。\n"
+                    "如果没有值得记住的内容，只输出 SKIP。\n"
+                    "如果有，输出格式：- [今日日期] 知识点内容（一行）\n\n"
+                    f"用户: {user_msg[:500]}\n"
+                    f"助手: {bot_reply[:500]}"
+                )
+                env = safe_env()
+                result = subprocess.run(
+                    [CLAUDE_PATH, "-p", prompt, "--model", "haiku"],
+                    capture_output=True, text=True, timeout=30, env=env,
+                )
+                output = result.stdout.strip()
+                if not output or "SKIP" in output.upper() or len(output) < 10:
+                    return
+
+                # Append to learnings.md
+                learnings_path = Path("/Users/tuanyou/Happycode2026/vault/memory/learnings.md")
+                with open(learnings_path, "a", encoding="utf-8") as f:
+                    f.write(f"\n{output}\n")
+                logger.info(f"Real-time fact extracted: {output[:80]}")
+
+            except Exception as e:
+                logger.debug(f"Fact extraction failed (non-fatal): {e}")
+
+        threading.Thread(target=_extract, daemon=True).start()
 
     def _schedule_next_step(self, ltm, task, last_output: str,
                             sender_id: str, system_prompt: str) -> None:
@@ -305,7 +412,7 @@ class ClaudeMixin:
                 success, output = run_with_resume(
                     full_prompt,
                     task_id=task_id,
-                    timeout=480,
+                    timeout=900,
                     max_retries=2,
                     user_message=continue_prompt,
                     system_prompt=system_prompt,
@@ -352,7 +459,7 @@ class ClaudeMixin:
             success, output = run_with_resume(
                 full_prompt,
                 task_id=task_id,
-                timeout=480,
+                timeout=900,
                 max_retries=2,
                 user_message=prompt,
                 system_prompt=system_prompt,

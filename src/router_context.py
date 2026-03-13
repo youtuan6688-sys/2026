@@ -313,17 +313,61 @@ class ContextMixin:
         logger.info(f"Memory saved: {content[:80]}")
         self.sender.send_text(sender_id, f"已记住: {content}")
 
-    def _load_memory_context(self) -> str:
-        """Load condensed memory context with smart truncation."""
+    # ── Intent-based memory file selection ──
+    _MEMORY_LIMITS = {
+        "profile.md": 1500,
+        "tools.md": 3000,
+        "decisions.md": 1200,
+        "learnings.md": 1500,
+        "patterns.md": 800,
+    }
+    _INTENT_KEYWORDS = {
+        "tools": (
+            re.compile(r"工具|MCP|cron|定时|脚本|skill|命令|部署|配置|安装|升级|视频|抓取|"
+                       r"scraper|bitable|飞书|bot|服务", re.I),
+            ["tools.md"],
+        ),
+        "decisions": (
+            re.compile(r"决定|之前|上次|回顾|历史|为什么|记得|记忆|忘", re.I),
+            ["decisions.md", "learnings.md"],
+        ),
+        "identity": (
+            re.compile(r"你是谁|你叫什么|介绍|能做什么|功能", re.I),
+            ["profile.md", "tools.md"],
+        ),
+    }
+    _TRIVIAL_RE = re.compile(
+        r"^(ok|好的?|谢谢|嗯|收到|666|👍|哈+|行|了解|明白|知道了|对|是的)$",
+        re.I,
+    )
+
+    def _select_memory_files(self, message: str = "") -> list[str]:
+        """Select which memory files to load based on message content."""
+        if not message or self._TRIVIAL_RE.match(message.strip()):
+            return []  # Skip memory for trivial messages
+
+        # Check intent keywords
+        for _intent, (pattern, files) in self._INTENT_KEYWORDS.items():
+            if pattern.search(message):
+                return files
+
+        # Default: load all for complex messages
+        return list(self._MEMORY_LIMITS.keys())
+
+    def _load_memory_context(self, message: str = "") -> str:
+        """Load condensed memory context with smart truncation.
+
+        Args:
+            message: User message for intent-based file selection.
+                     Empty string loads all files (backward compatible).
+        """
+        selected = self._select_memory_files(message) if message else list(self._MEMORY_LIMITS.keys())
+        if not selected:
+            return ""
+
         memory_parts = []
-        mem_limits = {
-            "profile.md": 1500,
-            "tools.md": 3000,
-            "decisions.md": 1200,
-            "learnings.md": 1500,
-            "patterns.md": 800,
-        }
-        for name, max_chars in mem_limits.items():
+        for name in selected:
+            max_chars = self._MEMORY_LIMITS.get(name, 800)
             path = MEMORY_DIR / name
             if path.exists():
                 content = path.read_text(encoding="utf-8").strip()
@@ -406,9 +450,9 @@ class ContextMixin:
 
         return "\n\n---\n\n".join(parts)
 
-    def _build_system_prompt(self, user_id: str = "") -> str:
+    def _build_system_prompt(self, user_id: str = "", message: str = "") -> str:
         """Build static system prompt for --append-system-prompt."""
-        parts = [self._load_memory_context()]
+        parts = [self._load_memory_context(message=message)]
 
         # Inject pending tasks for this user
         if user_id:

@@ -953,6 +953,16 @@ def run_daily_evolution(target_date: date = None):
     # Notify admin with evolution results
     _notify_admin(target_date, persona_result, contact_results, knowledge_result)
 
+    # Auto-compress memory files that exceed size thresholds
+    try:
+        from src.memory_compressor import compress_all
+        compress_results = compress_all()
+        compressed_files = [k for k, v in compress_results.items() if v]
+        if compressed_files:
+            logger.info(f"Auto-compressed memory files: {compressed_files}")
+    except Exception as e:
+        logger.warning(f"Memory compression failed (non-fatal): {e}")
+
     # Only archive buffer if all tasks succeeded; keep for retry otherwise
     if failures == 0:
         archive_buffer(target_date)

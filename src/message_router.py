@@ -27,6 +27,7 @@ from src.feishu_docs import FeishuDocManager
 from src.feishu_bitable import FeishuBitableManager
 from src.feishu_sheets import FeishuSheetsManager
 from src.contact_memory import ContactMemory
+from src.brain_manager import BrainManager
 from src.concurrency import MessageGate
 from src.quota_tracker import QuotaTracker
 from src import task_scheduler
@@ -70,6 +71,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self.contacts = ContactMemory(settings)
         self.gate = MessageGate(max_group_workers=2)
         self.quota = QuotaTracker()
+        self.brain_manager = BrainManager()
         self.workflow_engine = WorkflowEngine()
         BUFFER_DIR.mkdir(parents=True, exist_ok=True)
         # Per-chat history: {chat_id: deque([{role, text, time, user}], maxlen=15)}
