@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scraper_config import GEMINI_DAILY_LIMIT
-from bitable_client import fetch_pending_tasks, update_task_status, write_result
+from bitable_client import fetch_pending_tasks, update_task_status, write_result, write_breakdown_rows
 from douyin_scraper import scrape_douyin, ScrapedVideo
 from gemini_analyzer import analyze_video, get_quota
 
@@ -106,6 +106,33 @@ def _build_result_fields(video: ScrapedVideo, analysis: dict, keyword: str) -> d
     return {k: v for k, v in fields.items() if v is not None}
 
 
+def _build_breakdown_rows(analysis: dict, video_title: str, keyword: str) -> list[dict]:
+    """将 Gemini 返回的 timeline 数组转换为逐秒拆解表的行"""
+    timeline = analysis.get("timeline", [])
+    if not timeline:
+        return []
+
+    rows = []
+    for entry in timeline:
+        row = {
+            "时间段": str(entry.get("time", "")),
+            "视频标题": video_title,
+            "关键词": keyword,
+            "场景(色调|空间)": str(entry.get("scene", "")),
+            "角色": str(entry.get("character", "")),
+            "产品": str(entry.get("product", "")),
+            "口播": str(entry.get("voiceover", "")),
+            "字幕文案": str(entry.get("subtitle", "")),
+            "画面描述": str(entry.get("visual_desc", "")),
+            "镜头语言": str(entry.get("camera", "其他")),
+            "情绪节奏": str(entry.get("emotion", "其他")),
+            "说服机制": [str(m) for m in entry.get("persuasion", [])] if isinstance(entry.get("persuasion"), list) else [],
+            "营销功能": str(entry.get("marketing_function", "其他")),
+        }
+        rows.append(row)
+    return rows
+
+
 def process_task(task: dict) -> dict:
     """
     处理单个任务：抓取 → 分析 → 写回
@@ -157,6 +184,13 @@ def process_task(task: dict) -> dict:
         if rid:
             analyzed += 1
             logger.info(f"Written to Bitable: {rid}")
+
+            # 写入逐秒拆解表
+            if analysis:
+                breakdown_rows = _build_breakdown_rows(analysis, video.title, keyword)
+                if breakdown_rows:
+                    written = write_breakdown_rows(breakdown_rows)
+                    logger.info(f"Written {written} breakdown rows for: {video.title[:30]}")
         else:
             failed += 1
 

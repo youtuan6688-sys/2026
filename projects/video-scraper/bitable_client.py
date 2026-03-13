@@ -8,7 +8,7 @@ from typing import Any
 
 import requests
 
-from scraper_config import BITABLE_APP_TOKEN, TASK_TABLE_ID, RESULT_TABLE_ID, LARK_API_BASE
+from scraper_config import BITABLE_APP_TOKEN, TASK_TABLE_ID, RESULT_TABLE_ID, BREAKDOWN_TABLE_ID, LARK_API_BASE
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,23 @@ def write_result(result: dict) -> str | None:
         logger.error(f"Write result failed: {data.get('msg')}")
         return None
     return data.get("data", {}).get("record", {}).get("record_id")
+
+
+def write_breakdown_rows(rows: list[dict]) -> int:
+    """批量写入逐秒拆解行，返回成功写入的数量"""
+    url = f"{LARK_API_BASE}/bitable/v1/apps/{BITABLE_APP_TOKEN}/tables/{BREAKDOWN_TABLE_ID}/records/batch_create"
+    records = [{"fields": row} for row in rows]
+    # Bitable 批量写入上限 500 条
+    written = 0
+    for i in range(0, len(records), 500):
+        batch = records[i:i+500]
+        resp = requests.post(url, headers=_headers(), json={"records": batch}, timeout=30)
+        data = resp.json()
+        if data.get("code") != 0:
+            logger.error(f"Write breakdown batch failed: {data.get('msg')}")
+        else:
+            written += len(batch)
+    return written
 
 
 def _text_value(val: Any) -> str:

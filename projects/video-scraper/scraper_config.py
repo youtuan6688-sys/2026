@@ -6,6 +6,7 @@ from pathlib import Path
 BITABLE_APP_TOKEN = "MnbvbQqDsaot42syrwKco3TDneg"
 TASK_TABLE_ID = "tbl2vrXrzJbDHksM"
 RESULT_TABLE_ID = "tblrimY09fT8JGSk"
+BREAKDOWN_TABLE_ID = "tbl3ph0hmMSqZvAm"  # 逐秒拆解表
 
 # ── Gemini ───────────────────────────────────────────
 GEMINI_MODEL = "gemini-2.5-flash"
