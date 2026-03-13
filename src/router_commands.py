@@ -76,6 +76,11 @@ class CommandsMixin:
             "/doc create <标题> — 创建飞书文档\n"
             "/doc write <ID> <内容> — 写入飞书文档\n"
             "/doc share <ID> <邮箱> — 分享飞书文档\n"
+            "/bt list — 多维表格模板列表\n"
+            "/bt info <模板> — 查看模板详情\n"
+            "/bt create <模板> — 一键建表\n"
+            "/bt new <模板> — 新建多维表格+表\n"
+            "/bt export <token> <id> — 导出数据\n"
             "\n直接发消息 — AI 对话\n"
             "发送链接 — 自动解析保存到知识库"
         )
@@ -90,6 +95,8 @@ class CommandsMixin:
             "/search <关键词> — 搜知识库\n"
             "/doc read <链接> — 读飞书文档\n"
             "/doc create <标题> — 创建飞书文档\n"
+            "/bt list — 多维表格模板\n"
+            "/bt create <模板> — 一键建表\n"
             "/kb — 知识库统计\n"
             "/video <URL> — 视频拆解分析\n"
             "/video search <关键词> — 搜索视频\n"
@@ -318,6 +325,145 @@ class CommandsMixin:
                 lines.append(f"  {p['error_type']}: {p['count']}x in {', '.join(p['sources'][:3])}")
 
         self._send_long_text(sender_id, "\n".join(lines))
+
+    # ── Bitable Commands ──
+
+    def _handle_bitable_command(self, text: str, sender_id: str):
+        """Handle /bt commands for Bitable template operations.
+
+        Usage:
+            /bt list              — 列出所有模板
+            /bt info <模板名>     — 查看模板详情
+            /bt create <模板名> [自定义表名]  — 在默认 app 中一键建表
+            /bt new <模板名> [app名]         — 新建 app + 表
+            /bt stats <app_token> <table_id> — 表统计
+            /bt export <app_token> <table_id> [md|csv] — 导出数据
+        """
+        parts = text.strip().split(maxsplit=3)
+        # parts[0] = "/bt", parts[1] = subcommand, ...
+
+        if len(parts) < 2:
+            self._send_long_text(sender_id, self.bitable_factory.list_available_formatted())
+            return
+
+        sub = parts[1].lower()
+
+        if sub in ("list", "列表", "ls"):
+            self._send_long_text(sender_id, self.bitable_factory.list_available_formatted())
+            return
+
+        if sub in ("info", "详情", "describe"):
+            if len(parts) < 3:
+                self.sender.send_text(sender_id, "用法: /bt info <模板名>")
+                return
+            desc = self.bitable_factory.describe_template(parts[2])
+            if desc:
+                self._send_long_text(sender_id, desc)
+            else:
+                self.sender.send_text(
+                    sender_id,
+                    f"模板 '{parts[2]}' 不存在。用 /bt list 查看可用模板",
+                )
+            return
+
+        if sub in ("create", "建表"):
+            if len(parts) < 3:
+                self.sender.send_text(sender_id, "用法: /bt create <模板名> [自定义表名]")
+                return
+            template_key = parts[2]
+            custom_name = parts[3] if len(parts) > 3 else ""
+            # Use default app token from env
+            import os
+            app_token = os.getenv("BITABLE_DEFAULT_APP_TOKEN", "")
+            if not app_token:
+                self.sender.send_text(
+                    sender_id,
+                    "未配置默认多维表格。请先设置 BITABLE_DEFAULT_APP_TOKEN 环境变量，"
+                    "或使用 /bt new <模板名> 创建新的多维表格",
+                )
+                return
+            self.sender.send_text(sender_id, f"正在创建表: {template_key}...")
+            result = self.bitable_factory.create_from_template(
+                app_token, template_key, custom_name,
+            )
+            if result:
+                self.sender.send_markdown(
+                    sender_id,
+                    f"✅ **表创建成功**\n"
+                    f"表名: {result['name']}\n"
+                    f"表ID: `{result['table_id']}`\n"
+                    f"字段数: {result['fields_created']}\n"
+                    f"模板: {result.get('template', template_key)}",
+                )
+            else:
+                self.sender.send_text(sender_id, f"❌ 建表失败，检查模板名是否正确")
+            return
+
+        if sub in ("new", "新建"):
+            if len(parts) < 3:
+                self.sender.send_text(sender_id, "用法: /bt new <模板名> [app名]")
+                return
+            template_key = parts[2]
+            app_name = parts[3] if len(parts) > 3 else ""
+            self.sender.send_text(sender_id, f"正在创建新的多维表格: {template_key}...")
+            result = self.bitable_factory.create_full_app(
+                template_key, app_name,
+            )
+            if result:
+                self.sender.send_markdown(
+                    sender_id,
+                    f"✅ **多维表格创建成功**\n"
+                    f"名称: {result['name']}\n"
+                    f"App Token: `{result['app_token']}`\n"
+                    f"链接: {result['url']}\n"
+                    f"表ID: `{result.get('table_id', 'N/A')}`\n"
+                    f"字段数: {result.get('fields_created', 0)}",
+                )
+            else:
+                self.sender.send_text(sender_id, f"❌ 创建失败，检查模板名是否正确")
+            return
+
+        if sub in ("stats", "统计"):
+            if len(parts) < 4:
+                self.sender.send_text(sender_id, "用法: /bt stats <app_token> <table_id>")
+                return
+            app_token, table_id = parts[2], parts[3]
+            stats = self.bitable_manager.get_table_stats(app_token, table_id)
+            self.sender.send_markdown(
+                sender_id,
+                f"📊 **表统计**\n"
+                f"记录数: {stats['record_count']}\n"
+                f"字段数: {stats['field_count']}\n"
+                f"字段: {self.bitable_manager.format_fields(stats['fields'])}",
+            )
+            return
+
+        if sub in ("export", "导出"):
+            if len(parts) < 4:
+                self.sender.send_text(sender_id, "用法: /bt export <app_token> <table_id> [md|csv]")
+                return
+            # Parse: /bt export <app_token> <table_id> [format]
+            export_parts = parts[2].split() if len(parts) == 3 else [parts[2], parts[3]]
+            if len(export_parts) < 2:
+                self.sender.send_text(sender_id, "用法: /bt export <app_token> <table_id> [md|csv]")
+                return
+            app_token, table_id = export_parts[0], export_parts[1]
+            fmt = export_parts[2] if len(export_parts) > 2 else "md"
+            self.sender.send_text(sender_id, f"正在导出...")
+            if fmt == "csv":
+                data = self.bitable_manager.export_to_csv(app_token, table_id)
+            else:
+                data = self.bitable_manager.export_to_markdown(app_token, table_id)
+            if data:
+                self._send_long_text(sender_id, data)
+            else:
+                self.sender.send_text(sender_id, "表中无数据")
+            return
+
+        # Unknown subcommand → show help
+        self._send_long_text(sender_id, self.bitable_factory.list_available_formatted())
+
+    # ── Decision Display ──
 
     def _show_recent_decisions(self, sender_id: str):
         decisions = self._phase_log.get("decisions", [])

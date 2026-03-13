@@ -551,6 +551,267 @@ class FeishuBitableManager:
         logger.info(f"Batch AI processing: {stats}")
         return stats
 
+    # ── Batch Operations ──
+
+    def batch_update_records(self, app_token: str, table_id: str,
+                              updates: list[dict]) -> dict:
+        """Batch update records.
+
+        Args:
+            updates: [{"record_id": "...", "fields": {...}}]
+        Returns: {"success": int, "failed": int}
+        """
+        from lark_oapi.api.bitable.v1 import (
+            BatchUpdateAppTableRecordRequest,
+            BatchUpdateAppTableRecordRequestBody,
+        )
+        app_token = self.extract_app_token(app_token)
+        stats = {"success": 0, "failed": 0}
+
+        # Process in chunks of 500
+        for i in range(0, len(updates), 500):
+            chunk = updates[i:i + 500]
+            record_objs = [
+                AppTableRecord.builder()
+                .record_id(u["record_id"])
+                .fields(u["fields"])
+                .build()
+                for u in chunk
+            ]
+            req = BatchUpdateAppTableRecordRequest.builder() \
+                .app_token(app_token) \
+                .table_id(table_id) \
+                .request_body(
+                    BatchUpdateAppTableRecordRequestBody.builder()
+                    .records(record_objs)
+                    .build()
+                ).build()
+            resp = self.client.bitable.v1.app_table_record.batch_update(req)
+
+            if resp.success():
+                stats["success"] += len(chunk)
+            else:
+                logger.error(f"Batch update failed: code={resp.code}, msg={resp.msg}")
+                stats["failed"] += len(chunk)
+
+        logger.info(f"Batch update: {stats}")
+        return stats
+
+    def batch_delete_records(self, app_token: str, table_id: str,
+                              record_ids: list[str]) -> dict:
+        """Batch delete records.
+
+        Returns: {"success": int, "failed": int}
+        """
+        from lark_oapi.api.bitable.v1 import (
+            BatchDeleteAppTableRecordRequest,
+            BatchDeleteAppTableRecordRequestBody,
+        )
+        app_token = self.extract_app_token(app_token)
+        stats = {"success": 0, "failed": 0}
+
+        for i in range(0, len(record_ids), 500):
+            chunk = record_ids[i:i + 500]
+            req = BatchDeleteAppTableRecordRequest.builder() \
+                .app_token(app_token) \
+                .table_id(table_id) \
+                .request_body(
+                    BatchDeleteAppTableRecordRequestBody.builder()
+                    .records(chunk)
+                    .build()
+                ).build()
+            resp = self.client.bitable.v1.app_table_record.batch_delete(req)
+
+            if resp.success():
+                stats["success"] += len(chunk)
+            else:
+                logger.error(f"Batch delete failed: code={resp.code}, msg={resp.msg}")
+                stats["failed"] += len(chunk)
+
+        logger.info(f"Batch delete: {stats}")
+        return stats
+
+    # ── Advanced Query ──
+
+    def list_all_records(self, app_token: str, table_id: str,
+                          max_pages: int = 10) -> list[dict]:
+        """Fetch all records with automatic pagination.
+
+        Returns: list of {"record_id": "...", "fields": {...}}
+        """
+        all_records = []
+        page_token = ""
+
+        for _ in range(max_pages):
+            result = self.list_records(
+                app_token, table_id,
+                page_size=500, page_token=page_token,
+            )
+            all_records.extend(result["records"])
+            if not result["has_more"]:
+                break
+            page_token = result["page_token"]
+
+        logger.info(f"Fetched all: {len(all_records)} records from {table_id}")
+        return all_records
+
+    def search_records_advanced(self, app_token: str, table_id: str,
+                                 conditions: list[dict],
+                                 conjunction: str = "and",
+                                 sort: list[dict] | None = None,
+                                 field_names: list[str] | None = None,
+                                 page_size: int = 50) -> dict:
+        """Advanced search with sort and field selection.
+
+        Args:
+            conditions: [{"field_name": "...", "operator": "...", "value": ["..."]}]
+            conjunction: "and" or "or"
+            sort: [{"field_name": "...", "order": "asc"|"desc"}]
+            field_names: specific fields to return (None = all)
+        Returns: {"records": [...], "has_more": bool, "total": int}
+        """
+        app_token = self.extract_app_token(app_token)
+
+        body_builder = SearchAppTableRecordRequestBody.builder()
+
+        if conditions:
+            body_builder = body_builder.filter({
+                "conjunction": conjunction,
+                "conditions": conditions,
+            })
+
+        if sort:
+            body_builder = body_builder.sort(sort)
+
+        if field_names:
+            body_builder = body_builder.field_names(field_names)
+
+        req = SearchAppTableRecordRequest.builder() \
+            .app_token(app_token) \
+            .table_id(table_id) \
+            .page_size(page_size) \
+            .request_body(body_builder.build()) \
+            .build()
+        resp = self.client.bitable.v1.app_table_record.search(req)
+
+        if not resp.success():
+            logger.error(f"Advanced search failed: code={resp.code}, msg={resp.msg}")
+            return {"records": [], "has_more": False, "total": 0}
+
+        records = [
+            {"record_id": r.record_id, "fields": r.fields or {}}
+            for r in (resp.data.items or [])
+        ]
+        return {
+            "records": records,
+            "has_more": resp.data.has_more or False,
+            "total": getattr(resp.data, 'total', len(records)),
+        }
+
+    # ── Data Export ──
+
+    def export_to_markdown(self, app_token: str, table_id: str,
+                            field_names: list[str] | None = None,
+                            max_records: int = 100) -> str:
+        """Export table data as Markdown table.
+
+        Args:
+            field_names: columns to include (None = all)
+            max_records: max rows to export
+        Returns: Markdown table string
+        """
+        records = self.list_all_records(app_token, table_id)[:max_records]
+        if not records:
+            return "(无数据)"
+
+        # Determine columns
+        if field_names:
+            cols = field_names
+        else:
+            # Collect all field names from records
+            col_set: dict[str, None] = {}
+            for r in records:
+                for k in r["fields"]:
+                    col_set[k] = None
+            cols = list(col_set.keys())
+
+        # Build table
+        header = "| " + " | ".join(cols) + " |"
+        separator = "| " + " | ".join("---" for _ in cols) + " |"
+        rows = []
+        for r in records:
+            cells = []
+            for col in cols:
+                val = r["fields"].get(col, "")
+                cells.append(self._format_cell(val))
+            rows.append("| " + " | ".join(cells) + " |")
+
+        return "\n".join([header, separator] + rows)
+
+    def export_to_csv(self, app_token: str, table_id: str,
+                       field_names: list[str] | None = None,
+                       max_records: int = 500) -> str:
+        """Export table data as CSV string.
+
+        Returns: CSV-formatted string (comma-separated, with header)
+        """
+        import csv
+        import io
+
+        records = self.list_all_records(app_token, table_id)[:max_records]
+        if not records:
+            return ""
+
+        if field_names:
+            cols = field_names
+        else:
+            col_set: dict[str, None] = {}
+            for r in records:
+                for k in r["fields"]:
+                    col_set[k] = None
+            cols = list(col_set.keys())
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(cols)
+
+        for r in records:
+            row = [self._format_cell(r["fields"].get(col, "")) for col in cols]
+            writer.writerow(row)
+
+        return output.getvalue()
+
+    def get_table_stats(self, app_token: str, table_id: str) -> dict:
+        """Get table statistics: record count, field count, field types.
+
+        Returns: {"record_count": int, "field_count": int, "fields": [...]}
+        """
+        fields = self.list_fields(app_token, table_id)
+        # Count records (use search with no filter to get total)
+        result = self.list_records(app_token, table_id, page_size=1)
+        # Rough count via pagination
+        all_records = self.list_all_records(app_token, table_id)
+        return {
+            "record_count": len(all_records),
+            "field_count": len(fields),
+            "fields": fields,
+        }
+
+    @staticmethod
+    def _format_cell(val) -> str:
+        """Format a field value for export."""
+        if val is None or val == "":
+            return ""
+        if isinstance(val, list):
+            return ", ".join(
+                item.get("text", item.get("name", str(item)))
+                if isinstance(item, dict) else str(item)
+                for item in val
+            )
+        if isinstance(val, dict):
+            return val.get("text", val.get("link", val.get("name", str(val))))
+        return str(val).replace("\n", " ").replace("|", "\\|")
+
     # ── Formatting ──
 
     def format_records(self, records: list[dict], max_records: int = 10) -> str:

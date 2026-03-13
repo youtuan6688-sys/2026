@@ -25,6 +25,7 @@ from src.feishu_sender import FeishuSender
 from config.settings import settings
 from src.feishu_docs import FeishuDocManager
 from src.feishu_bitable import FeishuBitableManager
+from src.bitable_factory import BitableFactory
 from src.feishu_sheets import FeishuSheetsManager
 from src.contact_memory import ContactMemory
 from src.brain_manager import BrainManager
@@ -67,6 +68,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self.checkpoint_manager = checkpoint_manager or CheckpointManager()
         self.doc_manager = FeishuDocManager(settings)
         self.bitable_manager = FeishuBitableManager(settings)
+        self.bitable_factory = BitableFactory(self.bitable_manager)
         self.sheets_manager = FeishuSheetsManager(settings)
         self.contacts = ContactMemory(settings)
         self.gate = MessageGate(max_group_workers=2)
@@ -309,6 +311,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
             return
+        if stripped.startswith("/bt"):
+            self._handle_bitable_command(stripped, sender_id)
+            return
         if stripped.startswith("/work"):
             if self._is_video_group(sender_id):
                 task_text = stripped[5:].strip() if len(stripped) > 5 else ""
@@ -482,6 +487,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/bt"):
+            self._handle_bitable_command(stripped, sender_id)
             return True
 
         return False
