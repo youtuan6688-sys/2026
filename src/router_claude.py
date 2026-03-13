@@ -66,7 +66,12 @@ class ClaudeMixin:
                     group_ctx = self._group_memory.format_context(sender_id)
                     if group_ctx:
                         parts.append(group_ctx)
-                    self._group_memory.increment_stats(sender_id)
+                    # Cross-group capability sharing
+                    cross_ctx = self._group_memory.format_cross_group_context(sender_id)
+                    if cross_ctx:
+                        parts.append(cross_ctx)
+                    # Combined: increment message count + track pending turns (persisted)
+                    self._group_memory.increment_and_track(sender_id)
                 except Exception as e:
                     logger.warning(f"Group memory load failed: {e}")
 

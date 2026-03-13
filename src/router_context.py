@@ -89,13 +89,16 @@ class ContextMixin:
         self._save_histories()
 
     def _maybe_observe(self, chat_id: str, history: deque):
-        """Trigger Observer agent when enough turns accumulated."""
+        """Trigger Observer agent when enough turns accumulated.
+
+        Note: pending_turns is now tracked by increment_and_track() in
+        router_claude.py (persisted to group JSON, survives bot restarts).
+        This method only checks threshold and fires Observer.
+        """
         try:
             if not hasattr(self, '_group_memory'):
                 from src.group_memory import GroupMemory
                 self._group_memory = GroupMemory()
-
-            self._group_memory.track_turn(chat_id)
 
             if self._group_memory.should_observe(chat_id):
                 import threading

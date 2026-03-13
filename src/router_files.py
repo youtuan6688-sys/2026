@@ -409,6 +409,8 @@ class FilesMixin:
 
         # Elements: markdown content, plain text, button URLs
         for elem in card.get("elements", []):
+            if not isinstance(elem, dict):
+                continue
             tag = elem.get("tag", "")
             if tag == "markdown":
                 parts.append(elem.get("content", ""))

@@ -5,18 +5,19 @@ Architecture (inspired by Mastra's Observational Memory):
 - Noise filter: drops low-info messages (emoji-only, <5 chars, "+1" etc.)
 - Context = [observations (compressed, long-term)] + [recent raw messages (short-term)]
 - 10x token reduction vs full history approach
+- Cross-group capability sharing: observations about bot abilities propagate
 
 Each group gets a JSON file in vault/memory/groups/{chat_id}.json.
 """
 
 import json
 import logging
-import os
 import re
 import subprocess
 import threading
 from datetime import date, datetime
 from pathlib import Path
+
 from src.utils.subprocess_env import CLAUDE_PATH, safe_env
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,9 @@ NOISE_PATTERNS = [
     re.compile(r'^(\+1|ok|OK|好的|收到|是的|对的|6+|666+|厉害|牛|赞|可以)$'),  # short affirmations
     re.compile(r'^\[.+\]$'),                                    # [image] [sticker] etc.
 ]
+
+# Keywords for cross-group capability sharing
+_CAPABILITY_KEYWORDS = re.compile(r"能力|功能|可以|支持|上线|新增|升级")
 
 
 def is_noise(text: str) -> bool:
@@ -58,8 +62,6 @@ class GroupMemory:
         GROUPS_DIR.mkdir(parents=True, exist_ok=True)
         self._locks: dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
-        # Track unprocessed turns count per chat for Observer trigger
-        self._pending_counts: dict[str, int] = {}
 
     def _get_lock(self, chat_id: str) -> threading.Lock:
         with self._locks_lock:
@@ -75,18 +77,27 @@ class GroupMemory:
         path = self._profile_path(chat_id)
         if path.exists():
             try:
-                return json.loads(path.read_text(encoding="utf-8"))
+                profile = json.loads(path.read_text(encoding="utf-8"))
+                # Migrate: add group_profile if missing
+                if "group_profile" not in profile:
+                    profile["group_profile"] = ""
+                # Migrate: add pending_turns if missing
+                if "pending_turns" not in profile.get("stats", {}):
+                    profile.setdefault("stats", {})["pending_turns"] = 0
+                return profile
             except Exception:
                 pass
 
         profile = {
             "chat_id": chat_id,
             "created": date.today().isoformat(),
-            "observations": [],   # dated observation notes (core of observational memory)
-            "topics": [],         # recurring topics with frequency
+            "group_profile": "",      # auto-discovered group identity/theme
+            "observations": [],       # dated observation notes
+            "topics": [],             # recurring topics with frequency
             "stats": {
                 "total_messages": 0,
                 "total_observations": 0,
+                "pending_turns": 0,   # persisted Observer trigger counter
                 "last_active": None,
             },
         }
@@ -102,12 +113,21 @@ class GroupMemory:
                 encoding="utf-8",
             )
 
-    def increment_stats(self, chat_id: str):
-        """Increment message count and update last_active."""
+    def increment_and_track(self, chat_id: str) -> int:
+        """Increment message count + pending turns in one I/O. Returns pending count.
+
+        Combines old increment_stats() + track_turn() to avoid double file I/O.
+        """
         profile = self.load(chat_id)
-        profile["stats"]["total_messages"] += 1
-        profile["stats"]["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-        self.save(chat_id, profile)
+        updated_stats = {
+            **profile["stats"],
+            "total_messages": profile["stats"].get("total_messages", 0) + 1,
+            "pending_turns": profile["stats"].get("pending_turns", 0) + 1,
+            "last_active": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        updated = {**profile, "stats": updated_stats}
+        self.save(chat_id, updated)
+        return updated_stats["pending_turns"]
 
     def add_observation(self, chat_id: str, observation: str):
         """Add an observation note from the Observer."""
@@ -152,6 +172,12 @@ class GroupMemory:
         )[:MAX_TOPICS]
         self.save(chat_id, profile)
 
+    def update_group_profile(self, chat_id: str, profile_text: str):
+        """Update group-specific identity/theme overlay (max 500 chars)."""
+        data = self.load(chat_id)
+        updated = {**data, "group_profile": profile_text[:500]}
+        self.save(chat_id, updated)
+
     def format_context(self, chat_id: str) -> str:
         """Format observations as context for prompt injection.
 
@@ -160,6 +186,11 @@ class GroupMemory:
         """
         profile = self.load(chat_id)
         parts = []
+
+        # Group identity (auto-discovered)
+        group_profile = profile.get("group_profile", "")
+        if group_profile:
+            parts.append(f"群定位：{group_profile}")
 
         # Observations (last 15 notes, ~2000 tokens)
         observations = profile.get("observations", [])[-15:]
@@ -180,37 +211,70 @@ class GroupMemory:
 
         return "群聊长期记忆：\n" + "\n\n".join(parts)
 
+    def format_cross_group_context(self, exclude_chat_id: str) -> str:
+        """Summarize bot capabilities learned from other groups.
+
+        Scans observations from other groups for capability-related notes.
+        Returns formatted context string (max 5 notes).
+        """
+        capability_notes = []
+        for path in GROUPS_DIR.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if data.get("chat_id") == exclude_chat_id:
+                    continue
+                for obs in data.get("observations", []):
+                    note = obs.get("note", "")
+                    if _CAPABILITY_KEYWORDS.search(note):
+                        capability_notes.append(note)
+            except Exception:
+                continue
+
+        if not capability_notes:
+            return ""
+
+        # Deduplicate and limit
+        unique = list(dict.fromkeys(capability_notes))[:5]
+        return "其他群已验证的bot能力：\n" + "\n".join(f"- {n}" for n in unique)
+
     # ── Observer: extract observations from conversation batch ──
 
-    def track_turn(self, chat_id: str):
-        """Track that a new turn was added. Triggers Observer at threshold."""
-        count = self._pending_counts.get(chat_id, 0) + 1
-        self._pending_counts[chat_id] = count
-
     def should_observe(self, chat_id: str) -> bool:
-        """Check if enough turns accumulated to trigger Observer."""
-        return self._pending_counts.get(chat_id, 0) >= 10
+        """Check if enough turns accumulated to trigger Observer.
+
+        Adaptive threshold: new groups (< 5 observations) trigger at 5 turns,
+        established groups trigger at 10 turns.
+        """
+        profile = self.load(chat_id)
+        pending = profile["stats"].get("pending_turns", 0)
+        total_obs = profile["stats"].get("total_observations", 0)
+        threshold = 5 if total_obs < 5 else 10
+        return pending >= threshold
 
     def reset_pending(self, chat_id: str):
-        """Reset pending count after observation."""
-        self._pending_counts[chat_id] = 0
+        """Reset pending count after observation (persisted to JSON)."""
+        profile = self.load(chat_id)
+        updated_stats = {**profile["stats"], "pending_turns": 0}
+        updated = {**profile, "stats": updated_stats}
+        self.save(chat_id, updated)
 
     def run_observer(self, chat_id: str, recent_turns: list[dict]):
-        """Observer agent: extract observation notes from recent turns.
+        """Observer agent: extract observation notes + topics from recent turns.
 
-        Called when 10+ turns accumulated. Uses haiku for cost efficiency.
-        Extracts: key facts, decisions, user preferences, action items, topics.
+        Called when threshold turns accumulated. Uses haiku for cost efficiency.
+        Extracts: key facts, decisions, user preferences, action items, topics,
+        and optionally discovers group identity/theme.
         """
-        if len(recent_turns) < 5:
+        if len(recent_turns) < 3:
             return
 
         # Format turns
         lines = []
         for turn in recent_turns:
-            if turn["role"] == "system":
+            if turn.get("role") == "system":
                 continue
-            name = turn.get("user", "小叼毛") if turn["role"] == "user" else "小叼毛"
-            lines.append(f"[{turn.get('time', '')}] {name}: {turn['text']}")
+            name = turn.get("user", "小叼毛") if turn.get("role") == "user" else "小叼毛"
+            lines.append(f"[{turn.get('time', '')}] {name}: {turn.get('text', '')}")
 
         conv_text = "\n".join(lines)
 
@@ -224,15 +288,26 @@ class GroupMemory:
                 "\n".join(o["note"] for o in existing_obs)
             )
 
+        # Include group profile discovery for new/profileless groups
+        has_profile = bool(profile.get("group_profile", ""))
+        profile_instruction = ""
+        if not has_profile:
+            profile_instruction = (
+                "8. 如果能判断出这个群的定位/主题（如：视频拆解群、投资讨论群），"
+                "在最后一行输出「群定位：xxx」（一句话描述）\n"
+            )
+
         prompt = (
-            "你是一个对话观察员。从以下群聊记录中提取关键观察笔记。\n\n"
+            "你是一个对话观察员。从以下群聊记录中提取关键观察笔记和讨论话题。\n\n"
             "提取规则：\n"
             "1. 每条笔记一行，简洁扼要（20-80字）\n"
             "2. 只记录有实质内容的信息：事实、决策、用户需求、关键观点、待办事项\n"
             "3. 忽略闲聊、表情、无意义对话\n"
             "4. 不要重复已有的观察笔记\n"
             "5. 输出 3-8 条笔记，每条一行，不要编号\n"
-            "6. 如果对话没有实质内容，输出「无新观察」\n\n"
+            "6. 如果对话没有实质内容，输出「无新观察」\n"
+            "7. 在笔记之后，空一行，输出「话题：」后跟逗号分隔的讨论话题（2-5个关键词）\n"
+            f"{profile_instruction}\n"
             f"对话记录：\n{conv_text}"
             f"{existing_text}\n\n"
             "观察笔记："
@@ -250,19 +325,53 @@ class GroupMemory:
                 logger.info(f"Observer: no new observations for {chat_id}")
                 return
 
-            # Parse observations (one per line)
-            new_obs = [
-                line.strip().lstrip("- ·•")
-                for line in output.split("\n")
-                if line.strip() and len(line.strip()) > 5
-            ]
-
-            # Extract topics from observations
+            # Parse observations, topics, and group profile from output
+            new_obs = []
             topics = []
+            group_profile_text = ""
+
+            for line in output.split("\n"):
+                stripped = line.strip()
+                if not stripped or len(stripped) <= 5:
+                    continue
+
+                # Detect group profile line
+                if stripped.startswith("群定位：") or stripped.startswith("群定位:"):
+                    sep = "：" if "：" in stripped else ":"
+                    group_profile_text = stripped.split(sep, 1)[-1].strip()
+                    continue
+
+                # Detect topics line
+                if stripped.startswith("话题：") or stripped.startswith("话题:"):
+                    sep = "：" if "：" in stripped else ":"
+                    topic_str = stripped.split(sep, 1)[-1]
+                    # Split by Chinese and English commas
+                    topics = [
+                        t.strip() for t in re.split(r"[，,、]", topic_str)
+                        if t.strip()
+                    ]
+                    continue
+
+                # Regular observation
+                new_obs.append(stripped.lstrip("- ·•"))
+
+            # Save observations
             for obs in new_obs:
                 self.add_observation(chat_id, obs)
 
-            logger.info(f"Observer: added {len(new_obs)} observations for {chat_id}")
+            # Save topics
+            if topics:
+                self.update_topics(chat_id, topics)
+
+            # Save group profile (only if not already set)
+            if group_profile_text and not has_profile:
+                self.update_group_profile(chat_id, group_profile_text)
+                logger.info(f"Observer: discovered group profile for {chat_id}: {group_profile_text}")
+
+            logger.info(
+                f"Observer: added {len(new_obs)} observations, "
+                f"{len(topics)} topics for {chat_id}"
+            )
 
         except Exception as e:
             logger.warning(f"Observer failed for {chat_id}: {e}")
