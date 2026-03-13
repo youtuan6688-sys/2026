@@ -59,6 +59,8 @@ class IntentMixin:
                 return ""
             context_parts = []
             for r in results:
+                if not r:
+                    continue
                 if r.get("distance", 1) < 0.7:
                     title = r.get("title", "")
                     summary = r.get("summary", "")

@@ -41,7 +41,7 @@ class VectorStore:
         similar = []
         if results and results["ids"] and results["ids"][0]:
             for i, doc_id in enumerate(results["ids"][0]):
-                meta = results["metadatas"][0][i] if results["metadatas"] else {}
+                meta = (results["metadatas"][0][i] if results["metadatas"] else None) or {}
                 similar.append({
                     "id": doc_id,
                     "title": meta.get("title", ""),

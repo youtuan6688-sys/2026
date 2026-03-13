@@ -205,18 +205,31 @@ class QuotaTracker:
                         f"(below min threshold {min_limit}, likely stale — not learning)"
                     )
 
-                # Learn hourly limit (always learn — hourly limits are smaller)
-                old_hourly = self._state.setdefault("learned_hourly_limits", {}).get(model)
-                if old_hourly is None or hourly_count < old_hourly:
-                    self._state["learned_hourly_limits"][model] = hourly_count
-                    logger.info(f"Learned hourly limit for {model}: {hourly_count}")
+                # Learn hourly limit (with minimum threshold to avoid false learns)
+                min_hourly = {"haiku": 5, "sonnet": 3, "opus": 2}.get(model, 3)
+                if hourly_count >= min_hourly:
+                    old_hourly = self._state.setdefault("learned_hourly_limits", {}).get(model)
+                    if old_hourly is None or hourly_count < old_hourly:
+                        self._state["learned_hourly_limits"][model] = hourly_count
+                        logger.info(f"Learned hourly limit for {model}: {hourly_count}")
+                else:
+                    logger.info(
+                        f"Hourly rate limit for {model} at {hourly_count} calls "
+                        f"(below min {min_hourly}, likely transient — not learning)"
+                    )
 
             self._save_state()
 
     def _run_claude_subprocess(self, prompt: str, model: str,
                                timeout: int, cwd: str,
                                extra_args: list | None) -> tuple[str, bool]:
-        """Execute Claude CLI subprocess. Returns (output, is_rate_limited)."""
+        """Execute Claude CLI subprocess. Returns (output, is_rate_limited).
+
+        Rate limit detection logic:
+        - Exit code != 0 AND stderr/stdout contains rate limit phrases → rate limited
+        - Exit code == 0 AND stdout has content → normal response (never flag)
+        - Exit code == 0 AND stdout empty → check stderr for rate limit
+        """
         env = safe_env()
 
         cmd = [CLAUDE_PATH, "-p", prompt, "--model", model]
@@ -228,8 +241,35 @@ class QuotaTracker:
             timeout=timeout, cwd=cwd, env=env,
         )
         output = result.stdout.strip()
-        is_limited = self._is_rate_limited_output(output)
-        return output, is_limited
+        stderr = result.stderr.strip()
+        exit_code = result.returncode
+
+        # Only check for rate limit when something went wrong
+        if exit_code != 0:
+            # Non-zero exit: check both stderr and stdout for rate limit signals
+            is_limited = (self._is_rate_limited_output(stderr)
+                          or self._is_rate_limited_output(output))
+            if is_limited:
+                logger.warning(
+                    f"Rate limit detected (exit={exit_code}): "
+                    f"stderr={stderr[:200]!r}"
+                )
+            else:
+                logger.warning(
+                    f"Claude subprocess failed (exit={exit_code}): "
+                    f"stderr={stderr[:200]!r}, stdout={output[:100]!r}"
+                )
+            return output, is_limited
+
+        if not output:
+            # Exit 0 but empty output — unusual, check stderr
+            is_limited = self._is_rate_limited_output(stderr)
+            if is_limited:
+                logger.warning(f"Rate limit (empty output): stderr={stderr[:200]!r}")
+            return output, is_limited
+
+        # Exit 0 with output — normal successful response, never flag as rate limited
+        return output, False
 
     def call_claude(self, prompt: str, model: str,
                     timeout: int = 60, cwd: str = "/Users/tuanyou/Happycode2026",
