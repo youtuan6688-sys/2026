@@ -178,6 +178,13 @@ class ClaudeMixin:
 
                 full_prompt = self._build_full_prompt(prompt, chat_id=sender_id)
                 system_prompt = self._build_system_prompt(user_id=sender_id)
+
+                # 私聊也注入联系人记忆（与群聊对齐）
+                if sender_id and not sender_id.startswith("oc_"):
+                    user_ctx = self.contacts.format_context(sender_id)
+                    if user_ctx:
+                        system_prompt += f"\n\n对话用户信息:\n{user_ctx}"
+
                 task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
                 success, output = run_with_resume(

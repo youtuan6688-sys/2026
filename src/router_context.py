@@ -316,12 +316,19 @@ class ContextMixin:
     def _load_memory_context(self) -> str:
         """Load condensed memory context with smart truncation."""
         memory_parts = []
-        for name in ["profile.md", "tools.md", "decisions.md", "patterns.md"]:
+        mem_limits = {
+            "profile.md": 1500,
+            "tools.md": 3000,
+            "decisions.md": 1200,
+            "learnings.md": 1500,
+            "patterns.md": 800,
+        }
+        for name, max_chars in mem_limits.items():
             path = MEMORY_DIR / name
             if path.exists():
                 content = path.read_text(encoding="utf-8").strip()
                 if content:
-                    content = self._smart_truncate(content, max_chars=800)
+                    content = self._smart_truncate(content, max_chars=max_chars)
                     memory_parts.append(f"- Memory: {name}: {content}")
 
         # Load daily summary for cross-day context
