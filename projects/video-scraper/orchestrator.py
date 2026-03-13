@@ -13,14 +13,14 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
-from scraper_config import GEMINI_DAILY_LIMIT
-from bitable_client import fetch_pending_tasks, update_task_status, write_result, write_breakdown_rows
-from douyin_scraper import scrape_douyin, ScrapedVideo
-from gemini_analyzer import analyze_video, get_quota
-
-# 加载 .env
+# 必须在导入 gemini_analyzer 之前加载 .env（否则 GEMINI_API_KEY 为空）
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
+
+from scraper_config import GEMINI_DAILY_LIMIT
+from bitable_client import fetch_pending_tasks, update_task_status, write_result, write_breakdown_rows, ensure_owner_access
+from douyin_scraper import scrape_douyin, ScrapedVideo
+from gemini_analyzer import analyze_video, get_quota
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,24 @@ def _send_feishu_notify(message: str) -> None:
         logger.error(f"Failed to send Feishu notify: {e}")
 
 
+def _format_comments(comments: list) -> str:
+    """将评论列表格式化为可读文本"""
+    if not comments:
+        return ""
+    lines = []
+    for i, c in enumerate(comments, 1):
+        author_tag = " [作者]" if c.is_author else ""
+        lines.append(f"TOP{i}. @{c.username}{author_tag} (赞{c.likes})")
+        lines.append(f"   {c.content}")
+        if c.time or c.location:
+            lines.append(f"   {c.time} {c.location}".strip())
+        for j, r in enumerate(c.replies[:3], 1):
+            r_author = " [作者]" if r.is_author else ""
+            lines.append(f"   ↳ @{r.username}{r_author} (赞{r.likes}): {r.content}")
+        lines.append("")
+    return "\n".join(lines)[:10000]
+
+
 def _build_result_fields(video: ScrapedVideo, analysis: dict, keyword: str) -> dict:
     """将抓取+分析结果组装成 Bitable 字段"""
     fields = {
@@ -46,7 +64,11 @@ def _build_result_fields(video: ScrapedVideo, analysis: dict, keyword: str) -> d
         "作者": video.author,
         "点赞数": video.likes,
         "评论数": video.comments,
-        "视频链接": {"text": video.url, "link": video.url} if video.url else None,
+        "收藏数": video.bookmarks,
+        "转发数": video.shares,
+        "发布时间": video.publish_date,
+        "视频链接": {"text": video.url or "链接", "link": video.url} if video.url else None,
+        "高赞评论": _format_comments(video.top_comments),
     }
 
     if analysis:
@@ -143,14 +165,15 @@ def process_task(task: dict) -> dict:
     record_id = task["record_id"]
     keyword = task["keyword"]
     count = task["count"]
+    time_filter = task.get("time_filter", "")
 
-    logger.info(f"=== Processing task: '{keyword}' x{count} ===")
+    logger.info(f"=== Processing task: '{keyword}' x{count} (filter={time_filter or 'none'}) ===")
 
     # 标记抓取中
     update_task_status(record_id, "抓取中")
 
     # Phase 2: 抓取
-    videos = scrape_douyin(keyword, count)
+    videos = scrape_douyin(keyword, count, time_filter)
     success_videos = [v for v in videos if v.success]
 
     if not success_videos:
@@ -207,6 +230,9 @@ def process_task(task: dict) -> dict:
 
 def run_once() -> None:
     """单次执行：检查并处理所有待抓取任务"""
+    # 确保用户对 Bitable 有完全权限
+    ensure_owner_access()
+
     quota = get_quota()
     logger.info(f"Gemini quota: {quota.remaining}/{GEMINI_DAILY_LIMIT} remaining")
 

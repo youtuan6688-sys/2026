@@ -192,7 +192,7 @@ def analyze_video(video_path: str) -> dict | None:
             [video_file, ANALYSIS_PROMPT],
             generation_config=genai.GenerationConfig(
                 temperature=0.3,
-                max_output_tokens=8192,
+                max_output_tokens=16384,
             ),
         )
 

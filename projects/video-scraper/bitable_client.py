@@ -76,11 +76,22 @@ def fetch_pending_tasks() -> list[dict]:
     tasks = []
     for item in items:
         fields = item.get("fields", {})
+        # 时间范围：从 SingleSelect 读取（如 "7天" → "7d"）
+        time_raw = _text_value(fields.get("时间范围", ""))
+        time_filter = ""
+        if "7" in time_raw:
+            time_filter = "7d"
+        elif "30" in time_raw or "月" in time_raw:
+            time_filter = "30d"
+        elif "90" in time_raw or "季" in time_raw:
+            time_filter = "90d"
+
         tasks.append({
             "record_id": item["record_id"],
             "keyword": _text_value(fields.get("关键词", "")),
             "count": int(fields.get("数量", 5)),
             "priority": _text_value(fields.get("优先级", "中")),
+            "time_filter": time_filter,
         })
     return tasks
 
@@ -122,6 +133,61 @@ def write_breakdown_rows(rows: list[dict]) -> int:
         else:
             written += len(batch)
     return written
+
+
+_owner_shared = False
+
+
+def ensure_owner_access(owner_open_id: str = "") -> None:
+    """确保用户对 Bitable 有 full_access 权限，并尝试转移所有权（仅执行一次）"""
+    global _owner_shared
+    if _owner_shared:
+        return
+
+    if not owner_open_id:
+        owner_open_id = os.environ.get("FEISHU_ADMIN_OPEN_ID", "ou_4a18a2e35a5b04262a24f41731046d15")
+
+    # Step 1: 授权 full_access
+    url = f"{LARK_API_BASE}/drive/v1/permissions/{BITABLE_APP_TOKEN}/members"
+    body = {
+        "member_type": "openid",
+        "member_id": owner_open_id,
+        "perm": "full_access",
+    }
+    params = {"type": "bitable"}
+    try:
+        resp = requests.post(url, headers=_headers(), json=body, params=params, timeout=10)
+        data = resp.json()
+        if data.get("code") == 0:
+            logger.info(f"Granted full_access to {owner_open_id}")
+        else:
+            logger.warning(f"Permission grant response: {data.get('code')} - {data.get('msg')}")
+    except Exception as e:
+        logger.error(f"Failed to grant owner access: {e}")
+
+    # Step 2: 转移所有权给用户
+    _transfer_ownership(owner_open_id)
+    _owner_shared = True
+
+
+def _transfer_ownership(new_owner_open_id: str) -> None:
+    """将 Bitable 所有权转移给指定用户"""
+    url = f"{LARK_API_BASE}/drive/v1/permissions/{BITABLE_APP_TOKEN}/members/transfer_owner"
+    body = {
+        "member_type": "openid",
+        "member_id": new_owner_open_id,
+    }
+    params = {"type": "bitable", "need_notification": "true"}
+    try:
+        resp = requests.post(url, headers=_headers(), json=body, params=params, timeout=10)
+        data = resp.json()
+        if data.get("code") == 0:
+            logger.info(f"Ownership transferred to {new_owner_open_id}")
+        else:
+            # 常见错误：已经是 owner / 无权转移
+            logger.warning(f"Ownership transfer: {data.get('code')} - {data.get('msg')}")
+    except Exception as e:
+        logger.error(f"Ownership transfer failed: {e}")
 
 
 def _text_value(val: Any) -> str:
