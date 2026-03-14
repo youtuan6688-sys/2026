@@ -59,6 +59,13 @@ class FilesMixin:
 
         self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
 
+        # 语音消息：飞书 ASR 转文字 → 当普通文本交给 Claude
+        if msg_type == "audio":
+            self._handle_audio_message(
+                sender_id, file_key, message_id, chat_type, sender_open_id,
+            )
+            return
+
         if file_name and file_handler.is_supported(file_name):
             # Check if user has an auto-act pattern for this file type
             auto_prompt = self._check_auto_pattern(user_id, file_name)
@@ -86,6 +93,49 @@ class FilesMixin:
                 f"目前支持：Excel (.xlsx/.xls)、CSV、PDF、图片 (png/jpg/gif)\n"
                 f"已记录你的需求，后续会支持更多格式 ✅",
             )
+
+    def _handle_audio_message(self, sender_id: str, file_key: str,
+                               message_id: str, chat_type: str,
+                               sender_open_id: str):
+        """Handle voice messages: transcribe via Feishu ASR, then route to Claude."""
+        if _file_is_duplicate(file_key, "audio"):
+            return
+
+        self.sender.send_text(sender_id, "收到语音，正在识别... 🎙️")
+
+        feishu_client = self.doc_manager.client
+        file_path = file_handler.download_file(
+            feishu_client, message_id, file_key, "voice.opus", "file",
+        )
+
+        if not file_path:
+            self.sender.send_text(sender_id, "语音下载失败，请稍后重试 😵")
+            return
+
+        try:
+            text = file_handler.transcribe_audio(feishu_client, file_path)
+
+            if text.startswith("语音识别失败") or text.startswith("语音识别出错"):
+                self.sender.send_text(sender_id, text)
+                return
+
+            if text == "语音内容为空或无法识别":
+                self.sender.send_text(sender_id, "没听清，能再说一遍吗？🫠")
+                return
+
+            # 把转写文本当普通消息处理
+            logger.info(f"Audio transcribed: {text[:100]}")
+            self.handle_message(
+                sender_id=sender_id,
+                text=f"[语音转文字] {text}",
+                chat_type=chat_type,
+                sender_open_id=sender_open_id,
+            )
+        finally:
+            try:
+                file_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _log_file_request(self, user_id: str, sender_id: str, chat_type: str,
                            msg_type: str, file_name: str, file_key: str):

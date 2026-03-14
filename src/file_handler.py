@@ -1,6 +1,6 @@
 """Download and parse files from Feishu messages.
 
-Supports: Excel (.xlsx/.xls), CSV, images (via Gemini Vision).
+Supports: Excel (.xlsx/.xls), CSV, images (via Claude Vision), audio (via Feishu ASR).
 """
 
 import base64
@@ -270,6 +270,70 @@ def analyze_image_with_gemini(file_path: Path, gemini_api_key: str,
     except Exception as e:
         logger.error(f"Gemini Vision error: {e}", exc_info=True)
         return f"图片分析失败: {e}"
+
+
+def transcribe_audio(client: lark.Client, file_path: Path) -> str:
+    """Transcribe audio file using Feishu Speech-to-Text API.
+
+    Args:
+        client: Feishu lark_oapi client
+        file_path: Path to downloaded audio file
+
+    Returns:
+        Transcribed text, or error message.
+    """
+    from lark_oapi.api.speech_to_text.v1 import (
+        FileRecognizeSpeechRequest,
+        FileRecognizeSpeechRequestBody,
+    )
+    from lark_oapi.api.speech_to_text.v1.model.speech import Speech as SpeechModel
+    from lark_oapi.api.speech_to_text.v1.model.file_config import FileConfig
+
+    try:
+        import subprocess
+
+        # Feishu ASR only accepts PCM format — convert with ffmpeg
+        pcm_path = file_path.with_suffix(".pcm")
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-i", str(file_path),
+                    "-f", "s16le", "-acodec", "pcm_s16le",
+                    "-ar", "16000", "-ac", "1",
+                    str(pcm_path),
+                ],
+                capture_output=True, timeout=30, check=True,
+            )
+            audio_bytes = pcm_path.read_bytes()
+        except (subprocess.CalledProcessError, FileNotFoundError) as conv_err:
+            logger.warning(f"ffmpeg conversion failed, sending raw: {conv_err}")
+            audio_bytes = file_path.read_bytes()
+        finally:
+            pcm_path.unlink(missing_ok=True)
+
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        speech = SpeechModel.builder().speech(audio_b64).build()
+        config = FileConfig.builder().file_id("").format("pcm").engine_type("16k_auto").build()
+        body = FileRecognizeSpeechRequestBody.builder().speech(speech).config(config).build()
+        request = FileRecognizeSpeechRequest.builder().request_body(body).build()
+
+        resp = client.speech_to_text.v1.speech.file_recognize(request)
+
+        if not resp.success():
+            logger.error(f"Feishu ASR failed: code={resp.code}, msg={resp.msg}")
+            return f"语音识别失败: {resp.msg}"
+
+        text = resp.data.recognition_text if resp.data else ""
+        if not text:
+            return "语音内容为空或无法识别"
+
+        logger.info(f"ASR result ({len(audio_bytes)} bytes): {text[:100]}")
+        return text
+
+    except Exception as e:
+        logger.error(f"Feishu ASR error: {e}", exc_info=True)
+        return f"语音识别出错: {e}"
 
 
 def split_by_column(file_path: Path, column_name: str,
