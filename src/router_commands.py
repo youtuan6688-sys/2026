@@ -784,3 +784,137 @@ class CommandsMixin:
             ctx = f" ({d['context'][:50]})" if d.get("context") else ""
             lines.append(f"[{d['time']}] {d['decision']}{ctx}")
         self.sender.send_text(sender_id, "最近决策:\n" + "\n".join(lines))
+
+    # ── Evolution Report (基于 git log 的精确进化报告) ──
+
+    def _show_evolution_report(self, sender_id: str, date_str: str = ""):
+        """Generate evolution report from git log + evolution logs."""
+        from datetime import date, datetime, timedelta
+
+        project_dir = "/Users/tuanyou/Happycode2026"
+
+        # Parse target date
+        if date_str:
+            try:
+                target = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                self.sender.send_text(sender_id, f"日期格式错误，请用 YYYY-MM-DD")
+                return
+        else:
+            target = date.today()
+
+        next_day = target + timedelta(days=1)
+
+        # 1. Git commits for the target date
+        try:
+            git_result = subprocess.run(
+                ["git", "log",
+                 f"--since={target.isoformat()} 00:00:00",
+                 f"--until={next_day.isoformat()} 00:00:00",
+                 "--pretty=format:%h|%s|%ai",
+                 "--no-merges"],
+                capture_output=True, text=True, timeout=10,
+                cwd=project_dir,
+            )
+            commits = [line.split("|", 2) for line in git_result.stdout.strip().split("\n") if line.strip()]
+        except Exception as e:
+            logger.error(f"Git log failed: {e}")
+            commits = []
+
+        # 2. Uncommitted changes
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "--stat", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+                cwd=project_dir,
+            )
+            uncommitted = diff_result.stdout.strip()
+        except Exception:
+            uncommitted = ""
+
+        # 3. Evolution log for the day (if exists)
+        evo_log_path = Path(f"{project_dir}/vault/logs/evolution-{target.isoformat()}.md")
+        evo_summary = ""
+        if evo_log_path.exists():
+            try:
+                content = evo_log_path.read_text(encoding="utf-8")
+                # Extract key findings (skip frontmatter)
+                in_body = False
+                evo_lines = []
+                for line in content.split("\n"):
+                    if in_body:
+                        evo_lines.append(line)
+                    elif line.startswith("---") and evo_lines:
+                        in_body = True
+                    elif line.startswith("---"):
+                        evo_lines.append("")  # mark start of frontmatter
+                if evo_lines:
+                    evo_summary = "\n".join(evo_lines[:30]).strip()
+            except Exception:
+                pass
+
+        # 4. Format report
+        report_lines = [f"## 进化报告 ({target.isoformat()})"]
+
+        if commits:
+            # Categorize commits
+            feats = []
+            fixes = []
+            others = []
+            for parts in commits:
+                if len(parts) < 2:
+                    continue
+                hash_id, msg = parts[0], parts[1]
+                if msg.startswith("feat"):
+                    feats.append(f"- `{hash_id}` {msg}")
+                elif msg.startswith("fix"):
+                    fixes.append(f"- `{hash_id}` {msg}")
+                else:
+                    others.append(f"- `{hash_id}` {msg}")
+
+            if feats:
+                report_lines.append(f"\n### 新功能 ({len(feats)})")
+                report_lines.extend(feats)
+            if fixes:
+                report_lines.append(f"\n### 修复 ({len(fixes)})")
+                report_lines.extend(fixes)
+            if others:
+                report_lines.append(f"\n### 其他 ({len(others)})")
+                report_lines.extend(others)
+
+            # Stats
+            try:
+                stat_result = subprocess.run(
+                    ["git", "diff", "--stat",
+                     f"--since={target.isoformat()} 00:00:00",
+                     f"HEAD~{len(commits)}", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=project_dir,
+                )
+                # Use shortstat for summary
+                shortstat = subprocess.run(
+                    ["git", "diff", "--shortstat",
+                     f"HEAD~{len(commits)}", "HEAD"],
+                    capture_output=True, text=True, timeout=10,
+                    cwd=project_dir,
+                )
+                if shortstat.stdout.strip():
+                    report_lines.append(f"\n**代码统计**: {shortstat.stdout.strip()}")
+            except Exception:
+                pass
+        else:
+            report_lines.append("\n今天暂无 git 提交。")
+
+        if uncommitted:
+            report_lines.append(f"\n### 未提交更改")
+            # Only show summary line
+            stat_lines = uncommitted.strip().split("\n")
+            if stat_lines:
+                report_lines.append(stat_lines[-1])  # summary line
+
+        if evo_summary:
+            report_lines.append(f"\n### 自动进化摘要")
+            report_lines.append(evo_summary[:500])
+
+        report = "\n".join(report_lines)
+        self._send_long_text(sender_id, report)

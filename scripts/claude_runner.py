@@ -90,7 +90,7 @@ def _run_claude_streaming(
            "--allowedTools", ALLOWED_TOOLS,
            "--permission-mode", "auto",
            "--max-turns", str(max_turns),
-           "--output-format", "stream-json",
+           "--output-format", "text",
            ]
 
     if session_id and resume:
@@ -137,49 +137,11 @@ def _run_claude_streaming(
     watchdog_thread.start()
 
     try:
-        # Read stdout line by line; watchdog thread enforces timeout
-        # even when stdout is blocked (e.g. claude doing web search)
+        # --output-format text: stdout is plain text, read line by line
         for raw_line in proc.stdout:
             if timed_out:
                 break
-
-            line = raw_line.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                # Plain text fallback (shouldn't happen with stream-json)
-                collected_text.append(line)
-                continue
-
-            # Extract text from stream-json events
-            # Event types: message_start, content_block_start, content_block_delta,
-            # content_block_stop, message_delta, message_stop, result
-            event_type = event.get("type", "")
-
-            if event_type == "content_block_delta":
-                delta = event.get("delta", {})
-                text = delta.get("text", "")
-                if text:
-                    collected_text.append(text)
-
-            elif event_type == "result":
-                # Final result event — always use this as the definitive output
-                result_text = event.get("result", "")
-                if result_text:
-                    collected_text.clear()
-                    collected_text.append(result_text)
-
-            elif event_type == "assistant":
-                # Some formats send the full message
-                content = event.get("message", {}).get("content", [])
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "")
-                        if text:
-                            collected_text.append(text)
+            collected_text.append(raw_line.decode("utf-8", errors="replace"))
 
         if not timed_out:
             proc.wait(timeout=10)

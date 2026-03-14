@@ -429,6 +429,12 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             if self._handle_urls_private(stripped, urls, sender_id):
                 return
 
+        # Natural language evolution report trigger
+        import re
+        if re.search(r"进化了(什么|哪些|啥)|进化报告|evolution.?report", stripped, re.IGNORECASE):
+            self._show_evolution_report(sender_id)
+            return
+
         # Detect multi-step task signal
         is_long_task = ltm.is_multi_step_request(stripped)
         if is_long_task:
@@ -518,6 +524,10 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/ticket"):
             self._handle_ticket_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/evolution") or stripped.startswith("/进化"):
+            date_arg = stripped.split(" ", 1)[1].strip() if " " in stripped else ""
+            self._show_evolution_report(sender_id, date_arg)
             return True
 
         return False
