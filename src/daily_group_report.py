@@ -407,15 +407,15 @@ def _generate_images(story: str, style: dict,
         for i, prompt in enumerate(scene_prompts):
             filename = f"scene_{i + 1}.png"
             result = gen.generate_and_download(prompt, filename)
-            if result and result.exists():
-                # Copy to output_dir
+            if result and result.success and result.local_path and result.local_path.exists():
                 import shutil
                 dest = output_dir / filename
-                shutil.copy2(result, dest)
+                shutil.copy2(result.local_path, dest)
                 images.append(dest)
-                logger.info(f"Generated image {i + 1}/6 via phone Gemini")
+                logger.info(f"Generated image {i + 1}/{len(scene_prompts)} via phone Gemini")
             else:
-                logger.warning(f"Phone Gemini: image {i + 1} failed")
+                err = result.error if result else "no result"
+                logger.warning(f"Phone Gemini: image {i + 1} failed: {err}")
         if images:
             return images
         logger.warning("Phone Gemini returned no images")
@@ -436,10 +436,11 @@ def _generate_images(story: str, style: dict,
 
     client = genai.Client(api_key=api_key)
     images = []
+
     for i, prompt in enumerate(scene_prompts):
         try:
             response = client.models.generate_images(
-                model="imagen-3.0-generate-002",
+                model="imagen-4.0-fast-generate-001",
                 prompt=prompt,
                 config={"number_of_images": 1},
             )
@@ -448,7 +449,7 @@ def _generate_images(story: str, style: dict,
                 img_data = response.generated_images[0].image.image_bytes
                 img_path.write_bytes(img_data)
                 images.append(img_path)
-                logger.info(f"Generated image {i + 1}/6 via API")
+                logger.info(f"Generated image {i + 1}/{len(scene_prompts)} via Gemini API")
             time.sleep(2)
         except Exception as e:
             logger.warning(f"API image {i + 1} failed: {e}")
@@ -533,13 +534,22 @@ def _generate_report_for_group(
 
 
 def generate_daily_report(target_date: date | None = None):
-    """Main entry point: generate per-group reports from daily buffer."""
-    target = target_date or date.today()
-    logger.info(f"=== Generating Daily Group Report for {target} ===")
+    """Main entry point: generate per-group reports from daily buffer.
 
-    # 1. Load and group entries by chat_id
-    all_entries = _load_group_entries(target)
-    logger.info(f"Loaded {len(all_entries)} total group entries")
+    Runs at 06:00 PST (22:00 Beijing). At that time:
+    - Yesterday's PST buffer has the bulk of Beijing-daytime messages
+    - Today's PST buffer has early-morning Beijing messages (00:00-06:00 PST = 16:00-22:00 Beijing)
+    So we merge both buffers to cover a full Beijing day.
+    """
+    target = target_date or date.today()
+    yesterday = target - timedelta(days=1)
+    logger.info(f"=== Generating Daily Group Report for Beijing day (PST {yesterday} + {target} morning) ===")
+
+    # 1. Load and merge entries from yesterday + today's early morning
+    yesterday_entries = _load_group_entries(yesterday)
+    today_entries = _load_group_entries(target)
+    all_entries = yesterday_entries + today_entries
+    logger.info(f"Loaded {len(all_entries)} total group entries ({len(yesterday_entries)} yesterday + {len(today_entries)} today)")
 
     if not all_entries:
         logger.info("No group entries today, skipping report")
@@ -571,6 +581,8 @@ def generate_daily_report(target_date: date | None = None):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
+    # Default: run for today (merges yesterday + today morning buffers)
+    # "yesterday": shift back one more day (for re-running missed reports)
     target = date.today()
     if len(sys.argv) > 1 and sys.argv[1] == "yesterday":
         target = date.today() - timedelta(days=1)
