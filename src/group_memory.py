@@ -79,11 +79,16 @@ class GroupMemory:
             try:
                 profile = json.loads(path.read_text(encoding="utf-8"))
                 # Migrate: add group_profile if missing
+                migrated = False
                 if "group_profile" not in profile:
                     profile["group_profile"] = ""
+                    migrated = True
                 # Migrate: add pending_turns if missing
                 if "pending_turns" not in profile.get("stats", {}):
                     profile.setdefault("stats", {})["pending_turns"] = 0
+                    migrated = True
+                if migrated:
+                    self.save(chat_id, profile)
                 return profile
             except Exception:
                 pass
