@@ -284,6 +284,7 @@ class ContactMemory:
         "oc_d7120356187aed1e651863428e55ab47",  # 人工智障测试组
         "oc_d42807f92f606dc0b448f16c6c42fece",  # 爆款视频拆解实验室 (旧)
         "oc_494f1c2a811f65378639269461ba312f",  # 爆款视频拆解 (新·陈维玺)
+        "oc_2112c9fc35ba504c314b116b3ecd6eb5",  # 胖虎的山洞
     ]
 
     def _fetch_name_from_chats(self, open_id: str) -> str:

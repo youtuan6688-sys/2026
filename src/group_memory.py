@@ -321,7 +321,7 @@ class GroupMemory:
         try:
             env = safe_env()
             result = subprocess.run(
-                [CLAUDE_PATH, "-p", prompt, "--model", "haiku"],
+                [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
                 capture_output=True, text=True, timeout=30, env=env,
             )
             output = result.stdout.strip()

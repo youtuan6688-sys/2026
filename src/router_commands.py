@@ -81,6 +81,8 @@ class CommandsMixin:
             "/bt create <模板> — 一键建表\n"
             "/bt new <模板> — 新建多维表格+表\n"
             "/bt export <token> <id> — 导出数据\n"
+            "/memory-review — 记忆文件 Review\n"
+            "/ticket — 任务追踪 (create/list/update)\n"
             "\n直接发消息 — AI 对话\n"
             "发送链接 — 自动解析保存到知识库"
         )
@@ -97,6 +99,7 @@ class CommandsMixin:
             "/doc create <标题> — 创建飞书文档\n"
             "/bt list — 多维表格模板\n"
             "/bt create <模板> — 一键建表\n"
+            "/ticket create <标题> — 创建任务\n"
             "/kb — 知识库统计\n"
             "/video <URL> — 视频拆解分析\n"
             "/video search <关键词> — 搜索视频\n"
@@ -458,6 +461,315 @@ class CommandsMixin:
 
         # Unknown subcommand → show help
         self._send_long_text(sender_id, self.bitable_factory.list_available_formatted())
+
+    # ── Memory Review ──
+
+    def _show_memory_review(self, sender_id: str, args: str = ""):
+        """Show auto-generated memory files for human review.
+
+        Usage:
+            /memory-review           — 列出所有记忆文件摘要
+            /memory-review <文件名>  — 查看某个文件完整内容
+            /memory-review clean     — 清理建议（列出可疑条目）
+        """
+        if args == "clean":
+            self._memory_review_clean(sender_id)
+            return
+
+        if args:
+            # Show specific file content
+            target = MEMORY_DIR / args
+            if not target.exists():
+                # Try with .md extension
+                target = MEMORY_DIR / f"{args}.md"
+            if not target.exists():
+                self.sender.send_text(sender_id, f"文件不存在: {args}")
+                return
+            content = target.read_text(encoding="utf-8").strip()
+            if not content:
+                self.sender.send_text(sender_id, f"{target.name} 为空")
+                return
+            header = f"📄 **{target.name}** ({len(content)}字)\n{'─' * 30}\n"
+            self._send_long_text(sender_id, header + content)
+            return
+
+        # List all memory files with summaries
+        lines = ["🧠 **记忆文件 Review**\n"]
+
+        # Vault memory files
+        if MEMORY_DIR.exists():
+            vault_files = sorted(MEMORY_DIR.glob("*.md"))
+            if vault_files:
+                lines.append("**Vault 记忆** (vault/memory/):")
+                for f in vault_files:
+                    size_kb = f.stat().st_size / 1024
+                    content = f.read_text(encoding="utf-8").strip()
+                    # Count sections
+                    sections = [l for l in content.split("\n") if l.startswith("## ") or l.startswith("### ")]
+                    section_count = len(sections)
+                    # Last modified
+                    import time
+                    mtime = time.strftime("%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+                    # Quality indicator
+                    quality = "🟢" if size_kb < 5 else "🟡" if size_kb < 10 else "🔴"
+                    lines.append(
+                        f"  {quality} `{f.name}` — {size_kb:.1f}KB, "
+                        f"{section_count}节, 更新 {mtime}"
+                    )
+                    # Show last section title as preview
+                    if sections:
+                        lines.append(f"      最近: {sections[-1].strip()}")
+
+        # Auto-generated Claude memory
+        auto_mem_dir = Path(os.path.expanduser(
+            "~/.claude/projects/-Users-tuanyou-Happycode2026/memory"
+        ))
+        if auto_mem_dir.exists():
+            auto_files = sorted(auto_mem_dir.glob("*.md"))
+            if auto_files:
+                lines.append("\n**Claude Auto-Memory** (~/.claude/projects/.../memory/):")
+                for f in auto_files:
+                    size_kb = f.stat().st_size / 1024
+                    import time
+                    mtime = time.strftime("%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+                    lines.append(f"  📝 `{f.name}` — {size_kb:.1f}KB, 更新 {mtime}")
+
+        # Contact memory stats
+        contacts_dir = MEMORY_DIR / "contacts"
+        if contacts_dir.exists():
+            contact_files = list(contacts_dir.glob("*.json"))
+            lines.append(f"\n**联系人记忆**: {len(contact_files)} 人")
+
+        # Group memory stats
+        groups_dir = MEMORY_DIR / "groups"
+        if groups_dir.exists():
+            group_files = list(groups_dir.glob("*.json"))
+            lines.append(f"**群记忆**: {len(group_files)} 群")
+
+        lines.append("\n用法:")
+        lines.append("  `/memory-review <文件名>` — 查看完整内容")
+        lines.append("  `/memory-review clean` — 清理建议")
+
+        self._send_long_text(sender_id, "\n".join(lines))
+
+    def _memory_review_clean(self, sender_id: str):
+        """Analyze memory files and suggest cleanup."""
+        lines = ["🧹 **记忆清理建议**\n"]
+        issues_found = 0
+
+        if not MEMORY_DIR.exists():
+            self.sender.send_text(sender_id, "记忆目录不存在")
+            return
+
+        for f in sorted(MEMORY_DIR.glob("*.md")):
+            size_kb = f.stat().st_size / 1024
+            content = f.read_text(encoding="utf-8").strip()
+            file_issues = []
+
+            # Check size
+            if size_kb > 5:
+                file_issues.append(f"⚠️ 体积过大 ({size_kb:.1f}KB > 5KB)，建议压缩旧条目")
+
+            # Check for potential low-quality entries
+            low_quality_patterns = [
+                "如果 A，那么 B",
+                "AUTOFIX:",
+                "PATTERN:",
+                "TODO:",
+            ]
+            for pattern in low_quality_patterns:
+                count = content.count(pattern)
+                if count > 3:
+                    file_issues.append(
+                        f"⚠️ 含 {count} 条「{pattern}」格式条目，考虑精简"
+                    )
+
+            # Check for duplicate-like entries (same date, similar content)
+            date_sections = [l for l in content.split("\n") if l.startswith("## 2026-")]
+            if len(date_sections) > 20:
+                file_issues.append(
+                    f"⚠️ 含 {len(date_sections)} 个日期节，考虑归档旧条目"
+                )
+
+            if file_issues:
+                issues_found += len(file_issues)
+                lines.append(f"**{f.name}**:")
+                for issue in file_issues:
+                    lines.append(f"  {issue}")
+
+        if issues_found == 0:
+            lines.append("✅ 所有记忆文件状态良好，无需清理")
+        else:
+            lines.append(f"\n共发现 {issues_found} 个待处理项")
+            lines.append("确认后可手动编辑，或让我自动压缩（回复「自动清理」）")
+
+        self._send_long_text(sender_id, "\n".join(lines))
+
+    # ── Ticket Management ──
+
+    def _handle_ticket_command(self, text: str, sender_id: str):
+        """Handle /ticket commands for task tracking.
+
+        Usage:
+            /ticket create <标题>     — 创建新任务
+            /ticket list              — 查看任务列表
+            /ticket update <ID> <状态> — 更新任务状态
+        """
+        parts = text.strip().split(maxsplit=3)
+
+        if len(parts) < 2:
+            self.sender.send_text(
+                sender_id,
+                "Ticket 命令:\n"
+                "  /ticket create <标题> — 创建任务\n"
+                "  /ticket list — 查看任务\n"
+                "  /ticket setup — 初始化 Ticket 表\n"
+                "  /ticket update <ID> <状态> — 更新状态"
+            )
+            return
+
+        sub = parts[1].lower()
+
+        if sub in ("setup", "init", "初始化"):
+            # Create ticket tracking table in Bitable
+            import os
+            app_token = os.getenv("BITABLE_DEFAULT_APP_TOKEN", "")
+            if not app_token:
+                self.sender.send_text(
+                    sender_id,
+                    "未配置 BITABLE_DEFAULT_APP_TOKEN。"
+                    "先用 /bt new ticket 创建，或设置环境变量"
+                )
+                return
+            self.sender.send_text(sender_id, "正在初始化 Ticket 表...")
+            result = self.bitable_factory.create_from_template(
+                app_token, "ticket", ""
+            )
+            if result:
+                self.sender.send_markdown(
+                    sender_id,
+                    f"✅ **Ticket 表创建成功**\n"
+                    f"表ID: `{result['table_id']}`\n"
+                    f"字段数: {result['fields_created']}\n"
+                    f"现在可以用 `/ticket create <标题>` 创建任务"
+                )
+            else:
+                self.sender.send_text(sender_id, "❌ 创建失败")
+            return
+
+        if sub in ("create", "new", "新建"):
+            title = parts[2] if len(parts) > 2 else ""
+            if not title:
+                self.sender.send_text(sender_id, "用法: /ticket create <任务标题>")
+                return
+            description = parts[3] if len(parts) > 3 else ""
+            self._create_ticket(title, description, sender_id)
+            return
+
+        if sub in ("list", "列表", "ls"):
+            self._list_tickets(sender_id)
+            return
+
+        if sub in ("update", "更新"):
+            if len(parts) < 4:
+                self.sender.send_text(sender_id, "用法: /ticket update <记录ID> <新状态>")
+                return
+            record_id, new_status = parts[2], parts[3]
+            self._update_ticket(record_id, new_status, sender_id)
+            return
+
+        self.sender.send_text(sender_id, "未知子命令。用 /ticket 查看帮助")
+
+    def _create_ticket(self, title: str, description: str, sender_id: str):
+        """Create a ticket record in Bitable."""
+        import os
+        app_token = os.getenv("BITABLE_DEFAULT_APP_TOKEN", "")
+        table_id = os.getenv("BITABLE_TICKET_TABLE_ID", "")
+        if not app_token or not table_id:
+            self.sender.send_text(
+                sender_id,
+                "Ticket 表未配置。先运行 /ticket setup 初始化，"
+                "然后设置 BITABLE_TICKET_TABLE_ID 环境变量"
+            )
+            return
+        from datetime import datetime
+        fields = {
+            "任务标题": title,
+            "状态": "待处理",
+            "优先级": "P1",
+            "创建时间": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        if description:
+            fields["描述"] = description
+        try:
+            result = self.bitable_manager.create_record(app_token, table_id, fields)
+            if result:
+                record_id = result.get("record", {}).get("record_id", "?")
+                self.sender.send_markdown(
+                    sender_id,
+                    f"✅ **Ticket 已创建**\n"
+                    f"标题: {title}\n"
+                    f"ID: `{record_id}`\n"
+                    f"状态: 待处理"
+                )
+            else:
+                self.sender.send_text(sender_id, "❌ 创建失败")
+        except Exception as e:
+            logger.error(f"Ticket creation failed: {e}")
+            self.sender.send_text(sender_id, f"创建失败: {e}")
+
+    def _list_tickets(self, sender_id: str):
+        """List recent tickets from Bitable."""
+        import os
+        app_token = os.getenv("BITABLE_DEFAULT_APP_TOKEN", "")
+        table_id = os.getenv("BITABLE_TICKET_TABLE_ID", "")
+        if not app_token or not table_id:
+            self.sender.send_text(sender_id, "Ticket 表未配置。先运行 /ticket setup")
+            return
+        try:
+            records = self.bitable_manager.search_records(
+                app_token, table_id, page_size=20
+            )
+            if not records:
+                self.sender.send_text(sender_id, "暂无 Ticket")
+                return
+            lines = ["📋 **任务列表**\n"]
+            status_icons = {
+                "待处理": "⬜", "进行中": "🔵", "已完成": "✅",
+                "已关闭": "⚫", "阻塞": "🔴",
+            }
+            for r in records:
+                fields = r.get("fields", {})
+                title = fields.get("任务标题", "无标题")
+                status = fields.get("状态", "未知")
+                priority = fields.get("优先级", "")
+                icon = status_icons.get(status, "❓")
+                rid = r.get("record_id", "")[:8]
+                lines.append(f"{icon} [{priority}] {title} (`{rid}`)")
+            self._send_long_text(sender_id, "\n".join(lines))
+        except Exception as e:
+            logger.error(f"Ticket list failed: {e}")
+            self.sender.send_text(sender_id, f"查询失败: {e}")
+
+    def _update_ticket(self, record_id: str, new_status: str, sender_id: str):
+        """Update a ticket's status."""
+        import os
+        app_token = os.getenv("BITABLE_DEFAULT_APP_TOKEN", "")
+        table_id = os.getenv("BITABLE_TICKET_TABLE_ID", "")
+        if not app_token or not table_id:
+            self.sender.send_text(sender_id, "Ticket 表未配置")
+            return
+        try:
+            result = self.bitable_manager.update_record(
+                app_token, table_id, record_id, {"状态": new_status}
+            )
+            if result:
+                self.sender.send_text(sender_id, f"✅ Ticket {record_id[:8]} 状态更新为: {new_status}")
+            else:
+                self.sender.send_text(sender_id, "❌ 更新失败")
+        except Exception as e:
+            logger.error(f"Ticket update failed: {e}")
+            self.sender.send_text(sender_id, f"更新失败: {e}")
 
     # ── Decision Display ──
 

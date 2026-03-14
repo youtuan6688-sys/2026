@@ -474,6 +474,56 @@ PAINT_FINANCE = BitableTemplate(
 )
 
 
+# ── Ticket 任务追踪 ──
+TICKET_TRACKER = BitableTemplate(
+    name="任务 Ticket",
+    description="任务追踪看板 — 类似 PR 的任务生命周期管理",
+    category="project",
+    fields=(
+        FieldDef("任务标题", 1),
+        FieldDef("描述", 1),
+        FieldDef("状态", 3, {"options": [
+            {"name": "待处理", "color": 0},
+            {"name": "进行中", "color": 1},
+            {"name": "Review", "color": 3},
+            {"name": "已完成", "color": 2},
+            {"name": "已关闭", "color": 6},
+            {"name": "阻塞", "color": 5},
+        ]}),
+        FieldDef("优先级", 3, {"options": [
+            {"name": "P0", "color": 5},
+            {"name": "P1", "color": 3},
+            {"name": "P2", "color": 1},
+            {"name": "P3", "color": 0},
+        ]}),
+        FieldDef("分类", 4, {"options": [
+            {"name": "功能开发"},
+            {"name": "Bug修复"},
+            {"name": "内容创作"},
+            {"name": "调研分析"},
+            {"name": "运维部署"},
+            {"name": "知识库"},
+            {"name": "进化任务"},
+        ]}),
+        FieldDef("指派", 3, {"options": [
+            {"name": "Bot"},
+            {"name": "用户"},
+            {"name": "Agent-002"},
+        ]}),
+        FieldDef("创建时间", 5, {"date_formatter": "yyyy-MM-dd HH:mm"}),
+        FieldDef("截止时间", 5, {"date_formatter": "yyyy-MM-dd"}),
+        FieldDef("完成时间", 5, {"date_formatter": "yyyy-MM-dd HH:mm"}),
+        FieldDef("执行摘要", 1),
+        FieldDef("关联文件", 15),
+        FieldDef("来源", 3, {"options": [
+            {"name": "用户指令"},
+            {"name": "自动发现"},
+            {"name": "日报任务"},
+            {"name": "进化规则"},
+        ]}),
+    ),
+)
+
 # ============================================================
 # 模板注册表
 # ============================================================
@@ -491,6 +541,7 @@ TEMPLATE_REGISTRY: dict[str, BitableTemplate] = {
     "live": LIVE_STREAM_PLAN,
     "paint_crm": PAINT_CRM,
     "paint_finance": PAINT_FINANCE,
+    "ticket": TICKET_TRACKER,
 }
 
 # 中文别名映射
@@ -516,6 +567,9 @@ TEMPLATE_ALIASES: dict[str, str] = {
     "艺术漆成本": "paint_finance",
     "漆成本": "paint_finance",
     "成本核算": "paint_finance",
+    "任务": "ticket",
+    "工单": "ticket",
+    "任务追踪": "ticket",
 }
 
 

@@ -53,9 +53,10 @@ class FilesMixin:
 
         user_id = sender_open_id or sender_id
 
-        # image 类型的 file_name 通常是 image_key（无扩展名），补上 .png
-        if msg_type == "image" and file_name and "." not in file_name:
-            file_name = f"{file_name}.png"
+        # image 类型：飞书图片的 file_name 是 image_key（无扩展名），强制当 .png 处理
+        if msg_type == "image":
+            if not file_name or not Path(file_name).suffix:
+                file_name = f"{file_name or file_key}.png"
 
         self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
 
@@ -66,22 +67,32 @@ class FilesMixin:
             )
             return
 
-        if file_name and file_handler.is_supported(file_name):
+        # 合并转发消息：展开子消息，提取文本+图片一起分析
+        if msg_type == "merge_forward":
+            self._handle_merge_forward(
+                sender_id, message_id, chat_type, sender_open_id,
+            )
+            return
+
+        # image 类型来自飞书，一定是可处理的图片
+        is_image_type = msg_type == "image"
+        if is_image_type or (file_name and file_handler.is_supported(file_name)):
             # Check if user has an auto-act pattern for this file type
-            auto_prompt = self._check_auto_pattern(user_id, file_name)
+            auto_prompt = self._check_auto_pattern(user_id, file_name) if not is_image_type else ""
 
             # Log workflow match (engine ready for future step execution)
-            try:
-                wf = self.workflow_engine.match_file(file_name, auto_prompt)
-                if wf:
-                    logger.info(
-                        f"Workflow matched: {wf['name']} for {file_name}"
-                    )
-            except Exception:
-                pass
+            if not is_image_type:
+                try:
+                    wf = self.workflow_engine.match_file(file_name, auto_prompt)
+                    if wf:
+                        logger.info(
+                            f"Workflow matched: {wf['name']} for {file_name}"
+                        )
+                except Exception:
+                    pass
 
             self._analyze_file(sender_id, msg_type, file_name, file_key,
-                               message_id, chat_type, user_prompt=auto_prompt,
+                               message_id, chat_type, user_prompt=auto_prompt if not is_image_type else "",
                                sender_open_id=sender_open_id)
         else:
             type_labels = {"file": "文件", "image": "图片", "audio": "语音", "video": "视频", "media": "媒体"}
@@ -436,14 +447,261 @@ class FilesMixin:
 
             msg = items[0]
             body_content = msg.body.content if msg.body else None
+            parsed_content = {}
+            if body_content and body_content.strip():
+                try:
+                    parsed_content = json.loads(body_content)
+                except json.JSONDecodeError:
+                    logger.warning(f"Cannot parse body content for {message_id}: {body_content[:100]}")
             return {
                 "message_id": msg.message_id,
                 "msg_type": msg.msg_type,
-                "content": json.loads(body_content) if body_content else {},
+                "content": parsed_content,
             }
         except Exception as e:
             logger.error(f"Error fetching message {message_id}: {e}", exc_info=True)
             return None
+
+    def _handle_merge_forward(self, sender_id: str, message_id: str,
+                               chat_type: str, sender_open_id: str,
+                               user_prompt: str = ""):
+        """Handle merge_forward messages: list sub-messages, extract text + images."""
+        from lark_oapi.api.im.v1 import ListMessageRequest
+
+        self.sender.send_text(sender_id, "正在打开转发记录... ⏳")
+
+        # 用 merge_forward 作为 container_id_type 列出子消息
+        request = (
+            ListMessageRequest.builder()
+            .container_id_type("merge_forward")
+            .container_id(message_id)
+            .page_size(50)
+            .build()
+        )
+        try:
+            resp = self.doc_manager.client.im.v1.message.list(request)
+            if not resp.success():
+                logger.error(f"Failed to list merge_forward sub-msgs: code={resp.code}, msg={resp.msg}")
+                self.sender.send_text(
+                    sender_id,
+                    "打开转发记录失败，可能没有权限读取这些消息 🫠",
+                )
+                return
+        except Exception as e:
+            logger.error(f"Error listing merge_forward: {e}", exc_info=True)
+            self.sender.send_text(sender_id, f"读取转发记录出错: {e}")
+            return
+
+        items = resp.data.items or []
+        if not items:
+            self.sender.send_text(sender_id, "转发记录是空的 🤷")
+            return
+
+        # 提取文本和图片
+        texts = []
+        image_infos = []  # (image_key, sub_message_id)
+        feishu_client = self.doc_manager.client
+
+        for msg in items:
+            try:
+                body_content = msg.body.content if msg.body and msg.body.content else None
+                if not body_content:
+                    continue
+                content = json.loads(body_content)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+
+            if msg.msg_type == "text":
+                texts.append(content.get("text", ""))
+            elif msg.msg_type == "post":
+                # 富文本：提取所有文字
+                post_content = content.get("content", content)
+                if isinstance(post_content, dict):
+                    for lang_content in post_content.values():
+                        if isinstance(lang_content, dict):
+                            for para in lang_content.get("content", []):
+                                for el in para:
+                                    if el.get("tag") == "text":
+                                        texts.append(el.get("text", ""))
+                elif isinstance(post_content, list):
+                    for para in post_content:
+                        for el in para:
+                            if el.get("tag") == "text":
+                                texts.append(el.get("text", ""))
+            elif msg.msg_type == "image":
+                image_key = content.get("image_key", "")
+                if image_key and len(image_infos) < 9:
+                    image_infos.append((image_key, msg.message_id or ""))
+
+        logger.info(
+            f"Merge_forward parsed: {len(texts)} texts, {len(image_infos)} images "
+            f"from {len(items)} sub-messages"
+        )
+
+        # 下载图片
+        downloaded_paths = []
+        for img_key, sub_mid in image_infos:
+            file_name = f"{img_key}.png"
+            file_path = file_handler.download_file(
+                feishu_client, sub_mid, img_key, file_name, "image",
+            )
+            if file_path:
+                downloaded_paths.append(str(file_path))
+
+        # 组装 prompt
+        combined_text = "\n".join(t for t in texts if t.strip())
+        prompt_parts = []
+        if combined_text:
+            prompt_parts.append(f"转发记录中的文字内容：\n{combined_text[:5000]}")
+        if downloaded_paths:
+            read_cmds = "\n".join(
+                f"- 图片{i+1}: {p}" for i, p in enumerate(downloaded_paths)
+            )
+            prompt_parts.append(
+                f"请用 Read 工具读取以下 {len(downloaded_paths)} 张图片：\n{read_cmds}"
+            )
+        if user_prompt:
+            prompt_parts.append(f"用户要求：{user_prompt}")
+        else:
+            prompt_parts.append(
+                "请综合分析以上转发记录的内容。"
+                "如果有图片，描述图片内容并与文字结合分析。"
+                "如果有数据，提取关键信息。给出有价值的总结。"
+            )
+
+        full_prompt = "\n\n".join(prompt_parts)
+
+        user_name = ""
+        if sender_open_id and sender_id.startswith("oc_"):
+            user_name = self.contacts.get_name(sender_open_id) if hasattr(self, 'contacts') else ""
+
+        analysis = self.quota.call_claude(full_prompt, "sonnet", timeout=180)
+        if analysis:
+            label = f"📋 转发记录分析（{len(texts)}条文字"
+            if downloaded_paths:
+                label += f" + {len(downloaded_paths)}张图片"
+            label += "）"
+            self._send_long_text(
+                sender_id, f"{label}：\n\n{analysis}",
+                at_user_id=sender_open_id, at_user_name=user_name,
+            )
+        else:
+            self.sender.send_text(sender_id, "分析转发记录时 AI 没有返回结果 😵")
+
+        # Cleanup downloaded images
+        for p in downloaded_paths:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _fetch_recent_chat_images(self, chat_id: str, max_images: int = 9) -> list[dict]:
+        """Fetch recent image messages from a group chat.
+
+        Returns list of dicts: [{"image_key": ..., "message_id": ...}, ...]
+        """
+        from lark_oapi.api.im.v1 import ListMessageRequest
+
+        request = (
+            ListMessageRequest.builder()
+            .container_id_type("chat")
+            .container_id(chat_id)
+            .page_size(30)
+            .build()
+        )
+        try:
+            resp = self.doc_manager.client.im.v1.message.list(request)
+            if not resp.success():
+                logger.error(f"Failed to list messages for {chat_id}: code={resp.code}, msg={resp.msg}")
+                return []
+
+            images = []
+            for msg in (resp.data.items or []):
+                if msg.msg_type != "image":
+                    continue
+                try:
+                    content = json.loads(msg.body.content) if msg.body and msg.body.content else {}
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                image_key = content.get("image_key", "")
+                if image_key:
+                    images.append({
+                        "image_key": image_key,
+                        "message_id": msg.message_id or "",
+                    })
+                if len(images) >= max_images:
+                    break
+            return images
+
+        except Exception as e:
+            logger.error(f"Error fetching recent images: {e}", exc_info=True)
+            return []
+
+    def handle_batch_images(self, sender_id: str, user_prompt: str,
+                            sender_open_id: str = "", max_images: int = 9):
+        """Fetch and analyze recent images from a group chat in batch."""
+        images = self._fetch_recent_chat_images(sender_id, max_images=max_images)
+        if not images:
+            self.sender.send_text(sender_id, "最近没找到图片消息 🤷")
+            return
+
+        self.sender.send_text(
+            sender_id,
+            f"找到 {len(images)} 张图片，正在批量分析... ⏳",
+        )
+
+        feishu_client = self.doc_manager.client
+        downloaded_paths = []
+        for img in images:
+            file_name = f"{img['image_key']}.png"
+            file_path = file_handler.download_file(
+                feishu_client, img["message_id"], img["image_key"],
+                file_name, "image",
+            )
+            if file_path:
+                downloaded_paths.append(str(file_path))
+
+        if not downloaded_paths:
+            self.sender.send_text(sender_id, "图片下载失败，请稍后重试 😵")
+            return
+
+        # Build prompt with all image paths for Claude to read
+        read_cmds = "\n".join(
+            f"- 图片{i+1}: {p}" for i, p in enumerate(downloaded_paths)
+        )
+        prompt = (
+            f"请用 Read 工具依次读取以下 {len(downloaded_paths)} 张图片，"
+            f"然后综合分析所有图片内容：\n{read_cmds}\n\n"
+        )
+        if user_prompt:
+            prompt += f"用户要求：{user_prompt}\n"
+        else:
+            prompt += (
+                "请分析这些图片的内容，如果有共同主题就总结。"
+                "如果包含文字，提取关键文字。"
+                "如果是产品/案例图，分析并对比。"
+            )
+
+        user_name = ""
+        if sender_open_id and sender_id.startswith("oc_"):
+            user_name = self.contacts.get_name(sender_open_id) if hasattr(self, 'contacts') else ""
+
+        analysis = self.quota.call_claude(prompt, "sonnet", timeout=180)
+        if analysis:
+            self._send_long_text(
+                sender_id,
+                f"📷 批量图片分析（{len(downloaded_paths)} 张）：\n\n{analysis}",
+                at_user_id=sender_open_id, at_user_name=user_name,
+            )
+        else:
+            self.sender.send_text(sender_id, "图片分析 AI 没有返回结果，请稍后重试 😵")
+
+        # Cleanup
+        for p in downloaded_paths:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     def _extract_quoted_text(self, parent_id: str) -> str:
         """Extract text content from a quoted message. Returns empty string if not text."""
@@ -608,16 +866,19 @@ class FilesMixin:
         if not file_key:
             return False
 
-        # image 类型的 file_name 通常是 image_key（无扩展名），补上 .png
-        if msg_type == "image" and "." not in file_name:
-            file_name = f"{file_name}.png"
+        # image 类型：飞书图片的 file_name 是 image_key（无扩展名），强制当 .png 处理
+        if msg_type == "image":
+            if not file_name or not Path(file_name).suffix:
+                file_name = f"{file_name or file_key}.png"
 
         logger.info(f"Quoted file detected: type={msg_type}, name={file_name}, key={file_key}")
 
         user_id = sender_open_id or sender_id
         self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
 
-        if file_name and file_handler.is_supported(file_name):
+        # image 类型来自飞书，一定是可处理的图片
+        is_image_type = msg_type == "image"
+        if is_image_type or (file_name and file_handler.is_supported(file_name)):
             self._analyze_file(
                 sender_id, msg_type, file_name, file_key,
                 message_id, chat_type, user_prompt=user_text,

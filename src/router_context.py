@@ -316,7 +316,15 @@ class ContextMixin:
         logger.info(f"Memory saved: {content[:80]}")
         self.sender.send_text(sender_id, f"已记住: {content}")
 
-    # ── Intent-based memory file selection ──
+    # ── Layered Context Loading (三层加载) ──
+    #
+    # Layer 1: Index — section headers only (always loaded, cheap)
+    # Layer 2: Summary — smart-truncated content (loaded for matched files)
+    # Layer 3: Full — complete file content (loaded only for exact intent match)
+    #
+    # This follows the "Life PR" article's recommendation:
+    # "先读目录，再读摘要，最后按需读详细内容"
+
     _MEMORY_LIMITS = {
         "profile.md": 1500,
         "tools.md": 3000,
@@ -324,6 +332,10 @@ class ContextMixin:
         "learnings.md": 1500,
         "patterns.md": 800,
     }
+
+    # Files larger than this threshold get index-only loading by default
+    _INDEX_THRESHOLD_KB = 3.0
+
     _INTENT_KEYWORDS = {
         "tools": (
             re.compile(r"工具|MCP|cron|定时|脚本|skill|命令|部署|配置|安装|升级|视频|抓取|"
@@ -337,6 +349,14 @@ class ContextMixin:
         "identity": (
             re.compile(r"你是谁|你叫什么|介绍|能做什么|功能", re.I),
             ["profile.md", "tools.md"],
+        ),
+        "evolution": (
+            re.compile(r"进化|学习|成长|能力|learnings|经验", re.I),
+            ["learnings.md", "patterns.md"],
+        ),
+        "patterns": (
+            re.compile(r"偏好|习惯|风格|模式|pattern|决策", re.I),
+            ["patterns.md", "decisions.md"],
         ),
     }
     _TRIVIAL_RE = re.compile(
@@ -357,26 +377,71 @@ class ContextMixin:
         # Default: load all for complex messages
         return list(self._MEMORY_LIMITS.keys())
 
+    @staticmethod
+    def _extract_index(content: str) -> str:
+        """Extract section headers + first line of each section as index.
+
+        This is Layer 1: cheap, always-loadable overview of a memory file.
+        """
+        lines = content.split("\n")
+        index_lines = []
+        for i, line in enumerate(lines):
+            if line.startswith("## ") or line.startswith("### "):
+                index_lines.append(line.strip())
+                # Add first non-empty content line after header as preview
+                for j in range(i + 1, min(i + 3, len(lines))):
+                    stripped = lines[j].strip()
+                    if stripped and not stripped.startswith("#"):
+                        preview = stripped[:80]
+                        if len(stripped) > 80:
+                            preview += "..."
+                        index_lines.append(f"  → {preview}")
+                        break
+        return "\n".join(index_lines) if index_lines else content[:200]
+
     def _load_memory_context(self, message: str = "") -> str:
-        """Load condensed memory context with smart truncation.
+        """Load memory context with layered loading strategy.
+
+        Layer 1 (Index): For large files not matched by intent → headers only
+        Layer 2 (Summary): For matched files → smart-truncated content
+        Layer 3 (Full): For small files or exact intent match → full content
 
         Args:
             message: User message for intent-based file selection.
                      Empty string loads all files (backward compatible).
         """
-        selected = self._select_memory_files(message) if message else list(self._MEMORY_LIMITS.keys())
-        if not selected:
+        intent_files = self._select_memory_files(message) if message else list(self._MEMORY_LIMITS.keys())
+        if not intent_files:
             return ""
 
+        all_files = list(self._MEMORY_LIMITS.keys())
         memory_parts = []
-        for name in selected:
-            max_chars = self._MEMORY_LIMITS.get(name, 800)
+
+        for name in all_files:
             path = MEMORY_DIR / name
-            if path.exists():
-                content = path.read_text(encoding="utf-8").strip()
-                if content:
-                    content = self._smart_truncate(content, max_chars=max_chars)
-                    memory_parts.append(f"- Memory: {name}: {content}")
+            if not path.exists():
+                continue
+            content = path.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+
+            size_kb = len(content.encode("utf-8")) / 1024
+            is_intent_match = name in intent_files
+
+            if is_intent_match:
+                # Layer 2/3: Load summary or full content for matched files
+                max_chars = self._MEMORY_LIMITS.get(name, 800)
+                loaded = self._smart_truncate(content, max_chars=max_chars)
+                memory_parts.append(f"- Memory: {name}: {loaded}")
+            elif size_kb > self._INDEX_THRESHOLD_KB:
+                # Layer 1: Index-only for large unmatched files
+                index = self._extract_index(content)
+                memory_parts.append(f"- Memory: {name} [索引]: {index}")
+            else:
+                # Small file, load summary even if not matched
+                max_chars = self._MEMORY_LIMITS.get(name, 800)
+                loaded = self._smart_truncate(content, max_chars=max_chars)
+                memory_parts.append(f"- Memory: {name}: {loaded}")
 
         # Load daily summary for cross-day context
         summary_path = MEMORY_DIR / "daily_summary.md"

@@ -10,6 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from scripts.claude_runner import run_with_resume
+from src import file_handler
 from src.brain_manager import BrainManager
 from src.long_task import LongTaskManager, STEP_COOLDOWN_S
 from src.utils.url_utils import extract_urls, detect_platform
@@ -85,6 +86,33 @@ class ClaudeMixin:
 
                 parts.append(f"用户消息:\n{prompt}")
 
+                # 智能图片感知：用户提到图片/照片时，自动拉群里最近的图片
+                if re.search(r"照片|图片|截图|图.{0,3}(看|评估|分析|帮|提升|推广)", prompt):
+                    try:
+                        images = self._fetch_recent_chat_images(sender_id, max_images=5)
+                        if images:
+                            feishu_client = self.doc_manager.client
+                            img_paths = []
+                            for img in images:
+                                fname = f"{img['image_key']}.png"
+                                fpath = file_handler.download_file(
+                                    feishu_client, img["message_id"],
+                                    img["image_key"], fname, "image",
+                                )
+                                if fpath:
+                                    img_paths.append(str(fpath))
+                            if img_paths:
+                                read_cmds = "\n".join(
+                                    f"- 图片{i+1}: {p}" for i, p in enumerate(img_paths)
+                                )
+                                parts.append(
+                                    f"[群聊最近的{len(img_paths)}张图片，请用 Read 工具读取后结合用户问题分析]\n"
+                                    f"{read_cmds}"
+                                )
+                                logger.info(f"Auto-fetched {len(img_paths)} images for group chat context")
+                    except Exception as e:
+                        logger.warning(f"Auto-fetch group images failed: {e}")
+
                 kb_context = self._query_knowledge_base(prompt, chat_type="group")
                 if kb_context:
                     parts.append(kb_context)
@@ -94,7 +122,7 @@ class ClaudeMixin:
                 output = self.quota.call_claude(
                     full_prompt, "sonnet", timeout=120,
                     extra_args=[
-                        "--permission-mode", "auto", "--verbose",
+                        "--permission-mode", "auto",
                         "--append-system-prompt", system_prompt,
                     ],
                 )

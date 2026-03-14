@@ -42,7 +42,20 @@ from src.router_files import FilesMixin
 from src.router_claude import ClaudeMixin, BUFFER_DIR
 from src.workflow_engine import WorkflowEngine
 
+import re
+
 logger = logging.getLogger(__name__)
+
+# 自然语言触发批量看图的关键词模式
+_BATCH_IMAGE_RE = re.compile(
+    r"(看看|分析|看下|帮我看|读一下|读下).{0,4}(这些|那些|上面的?|最近的?|群里的?)?"
+    r".{0,2}(图片|图|照片|截图)"
+    r"|批量.{0,2}(看|读|分析).{0,2}(图|照片)"
+    r"|(这些|那些|上面).{0,4}(图片|图|照片|截图).{0,4}(看|分析|读|说说|讲讲)"
+    r"|(图片|照片|截图).{0,8}(在这|发给你|给你|来了|这里|看看|分析|帮我看)"  # "图片在这里"
+    r"|(发|给|传).{0,4}(图片|照片|图).{0,4}(了|你|给你)"  # "发图片了"
+    r"|^(图片|照片|截图)$"  # 单独发"图片"/"照片"
+)
 
 # Admin-only commands (private chat only)
 _ADMIN_COMMANDS = frozenset((
@@ -311,6 +324,10 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         if stripped.startswith("/video"):
             self._get_video_handler().handle_command(stripped, sender_id)
             return
+        if stripped.startswith("/看图") or stripped.startswith("/ktu"):
+            prompt = stripped.split(None, 1)[1] if len(stripped.split(None, 1)) > 1 else ""
+            self.handle_batch_images(sender_id, prompt, sender_open_id=user_id)
+            return
         if stripped.startswith("/bt"):
             self._handle_bitable_command(stripped, sender_id)
             return
@@ -373,6 +390,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return
 
         # Default: 小叼毛 persona chat
+        # 图片感知已内置到 _execute_claude_group，提到照片/图片时自动拉取
         user_name = self.contacts.get_name(user_id) if user_id else ""
         self._add_turn("user", stripped, chat_id=sender_id, user_name=user_name)
         self._execute_claude_group(stripped, sender_id, user_id=user_id)
@@ -448,6 +466,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         if stripped == "/tasks":
             self._show_tasks(sender_id)
             return True
+        if stripped == "/memory-review" or stripped == "/mr":
+            self._show_memory_review(sender_id)
+            return True
 
         # Prefix match commands
         if stripped.startswith("/stock"):
@@ -490,6 +511,13 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/bt"):
             self._handle_bitable_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/memory-review ") or stripped.startswith("/mr "):
+            args = stripped.split(" ", 1)[1].strip()
+            self._show_memory_review(sender_id, args)
+            return True
+        if stripped.startswith("/ticket"):
+            self._handle_ticket_command(stripped, sender_id)
             return True
 
         return False

@@ -91,7 +91,7 @@ def _run_claude_streaming(
            "--permission-mode", "auto",
            "--max-turns", str(max_turns),
            "--output-format", "stream-json",
-           "--verbose"]
+           ]
 
     if session_id and resume:
         cmd.extend(["--resume", session_id])
