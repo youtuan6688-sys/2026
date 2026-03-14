@@ -2,9 +2,10 @@
 
 流水线:
 1. 从 daily_buffer 提取群聊素材 (sonnet)
-2. DeepSeek 写创意故事 (每天随机风格)
-3. Gemini 生成 6 张配图
-4. 合成发飞书群
+2. Claude sonnet 写创意故事 (每天随机风格)
+3. 合成发飞书群
+
+定时: 北京时间 22:00 (PST 06:00)
 """
 
 import hashlib
@@ -286,25 +287,26 @@ def _build_story_prompt(highlights: dict, style: dict,
 def _write_story(highlights: dict, style: dict,
                  target_date: date,
                  conversation_text: str = "") -> str:
-    """Write creative story — phone DeepSeek app (free) first, API fallback."""
+    """Write creative story — Claude first, DeepSeek API fallback."""
+    import subprocess
+
     prompt = _build_story_prompt(highlights, style, target_date, conversation_text)
 
-    # Try phone DeepSeek app first (free, via uiautomator2)
+    # Primary: Claude (high quality, no thinking leakage)
     try:
-        import importlib.util
-        _phone_ai_path = Path(__file__).parent.parent / "devices" / "oppo-PDYM20" / "scripts" / "phone_ai.py"
-        _spec = importlib.util.spec_from_file_location("phone_ai", _phone_ai_path)
-        _mod = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_mod)
-        PhoneAI, DEEPSEEK = _mod.PhoneAI, _mod.DEEPSEEK
-        ai = PhoneAI()
-        story = ai.generate_content(prompt, app=DEEPSEEK)
-        if story and len(story) > 100:
-            logger.info(f"Story generated via phone DeepSeek app ({len(story)} chars)")
+        env = safe_env()
+        result = subprocess.run(
+            [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+             "--output-format", "text"],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        story = result.stdout.strip()
+        if story and len(story) > 300:
+            logger.info(f"Story generated via Claude sonnet ({len(story)} chars)")
             return story
-        logger.warning(f"Phone DeepSeek returned too short: {len(story)} chars")
+        logger.warning(f"Claude returned too short: {len(story) if story else 0} chars")
     except Exception as e:
-        logger.warning(f"Phone DeepSeek failed, falling back to API: {e}")
+        logger.warning(f"Claude story generation failed: {e}")
 
     # Fallback: DeepSeek API
     try:
@@ -518,19 +520,15 @@ def _generate_report_for_group(
         f"{len(highlights.get('topics', []))} topics"
     )
 
-    # 3. Write creative story with actual conversation context (DeepSeek)
+    # 3. Write creative story with actual conversation context (Claude)
     story = _write_story(highlights, style, target, conv_text)
     logger.info(f"[{chat_id[:12]}] Story: {len(story)} chars")
 
-    # 4. Generate content-aware images (Gemini)
-    images = _generate_images(story, style, target, highlights)
-    logger.info(f"[{chat_id[:12]}] Images: {len(images)}")
-
-    # 5. Save report (with chat_id suffix for per-group archival)
+    # 4. Save report (with chat_id suffix for per-group archival)
     _save_report(story, highlights, style, target)
 
-    # 6. Send to this specific group
-    _send_report(story, images, style, target, chat_id=chat_id)
+    # 5. Send to this specific group (text only, no images)
+    _send_report(story, [], style, target, chat_id=chat_id)
 
 
 def generate_daily_report(target_date: date | None = None):
