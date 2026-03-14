@@ -378,6 +378,102 @@ LIVE_STREAM_PLAN = BitableTemplate(
 )
 
 
+PAINT_CRM = BitableTemplate(
+    name="艺术漆客户档案",
+    description="家装艺术漆客户全流程管理：从到店咨询到施工验收",
+    category="crm",
+    tags=("艺术漆", "家装", "客户", "施工", "CRM"),
+    fields=(
+        FieldDef("客户姓名", 1),
+        FieldDef("手机号", 13),
+        FieldDef("微信", 1),
+        FieldDef("小区/楼盘", 1),
+        FieldDef("户型", 3, {"options": [
+            {"name": "一室"}, {"name": "两室"}, {"name": "三室"},
+            {"name": "四室及以上"}, {"name": "别墅"}, {"name": "商业空间"},
+        ]}),
+        FieldDef("施工面积(㎡)", 2, {"formatter": "0.0"}),
+        FieldDef("客户阶段", 3, {"options": [
+            {"name": "🔍 到店咨询"}, {"name": "🎨 选色选工艺"},
+            {"name": "📐 工地测量"}, {"name": "💰 报价中"},
+            {"name": "✅ 已签约"}, {"name": "🏗️ 施工中"},
+            {"name": "👀 施工验收"}, {"name": "💵 已收款"},
+            {"name": "❄️ 暂搁"},
+        ]}),
+        FieldDef("来源渠道", 3, {"options": [
+            {"name": "到店自来"}, {"name": "老客户转介绍"},
+            {"name": "小红书"}, {"name": "抖音"},
+            {"name": "设计师推荐"}, {"name": "装修公司"},
+            {"name": "居然之家活动"}, {"name": "富森美活动"},
+        ]}),
+        FieldDef("品牌偏好", 3, {"options": [
+            {"name": "三棵树"}, {"name": "嘉宝莉"}, {"name": "均可"},
+        ]}),
+        FieldDef("工艺类型", 4, {"options": [
+            {"name": "丝绒漆"}, {"name": "微水泥"}, {"name": "马来漆"},
+            {"name": "肌理漆"}, {"name": "金箔漆"}, {"name": "仿石漆"},
+            {"name": "清水混凝土"}, {"name": "星空漆"}, {"name": "其他"},
+        ]}),
+        FieldDef("施工区域", 4, {"options": [
+            {"name": "客厅"}, {"name": "卧室"}, {"name": "餐厅"},
+            {"name": "玄关"}, {"name": "电视背景墙"}, {"name": "全屋"},
+            {"name": "商业空间"},
+        ]}),
+        FieldDef("报价金额", 2, {"formatter": "0"}),
+        FieldDef("已收金额", 2, {"formatter": "0"}),
+        FieldDef("对接人", 1),
+        FieldDef("施工队", 1),
+        FieldDef("预计施工日期", 5, {"date_formatter": "yyyy-MM-dd"}),
+        FieldDef("实际完工日期", 5, {"date_formatter": "yyyy-MM-dd"}),
+        FieldDef("跟进记录", 1),
+        FieldDef("客户满意度", 3, {"options": [
+            {"name": "⭐⭐⭐⭐⭐"}, {"name": "⭐⭐⭐⭐"},
+            {"name": "⭐⭐⭐"}, {"name": "⭐⭐"}, {"name": "⭐"},
+        ]}),
+        FieldDef("备注", 1),
+    ),
+)
+
+PAINT_FINANCE = BitableTemplate(
+    name="艺术漆项目成本核算",
+    description="单项目收支明细：材料成本、人工费、利润计算",
+    category="crm",
+    tags=("艺术漆", "成本", "财务", "利润", "核算"),
+    fields=(
+        FieldDef("项目名称", 1),
+        FieldDef("客户姓名", 1),
+        FieldDef("施工面积(㎡)", 2, {"formatter": "0.0"}),
+        FieldDef("品牌", 3, {"options": [
+            {"name": "三棵树"}, {"name": "嘉宝莉"},
+        ]}),
+        FieldDef("工艺", 3, {"options": [
+            {"name": "丝绒漆"}, {"name": "微水泥"}, {"name": "马来漆"},
+            {"name": "肌理漆"}, {"name": "金箔漆"}, {"name": "仿石漆"},
+            {"name": "清水混凝土"}, {"name": "星空漆"}, {"name": "其他"},
+        ]}),
+        FieldDef("合同金额", 2, {"formatter": "0"}),
+        FieldDef("材料成本", 2, {"formatter": "0"}),
+        FieldDef("底漆费用", 2, {"formatter": "0"}),
+        FieldDef("面漆费用", 2, {"formatter": "0"}),
+        FieldDef("辅材费用", 2, {"formatter": "0"}),
+        FieldDef("人工费", 2, {"formatter": "0"}),
+        FieldDef("施工工人数", 2, {"formatter": "0"}),
+        FieldDef("施工天数", 2, {"formatter": "0"}),
+        FieldDef("运输费", 2, {"formatter": "0"}),
+        FieldDef("其他费用", 2, {"formatter": "0"}),
+        FieldDef("总成本", 2, {"formatter": "0"}),
+        FieldDef("毛利润", 2, {"formatter": "0"}),
+        FieldDef("毛利率", 2, {"formatter": "0%"}),
+        FieldDef("收款状态", 3, {"options": [
+            {"name": "💰 已全款"}, {"name": "🔄 已收定金"},
+            {"name": "⏳ 施工完待收"}, {"name": "⚠️ 逾期未收"},
+        ]}),
+        FieldDef("结算日期", 5, {"date_formatter": "yyyy-MM-dd"}),
+        FieldDef("备注", 1),
+    ),
+)
+
+
 # ============================================================
 # 模板注册表
 # ============================================================
@@ -393,6 +489,8 @@ TEMPLATE_REGISTRY: dict[str, BitableTemplate] = {
     "knowledge": KNOWLEDGE_BASE,
     "prompt": PROMPT_LIBRARY,
     "live": LIVE_STREAM_PLAN,
+    "paint_crm": PAINT_CRM,
+    "paint_finance": PAINT_FINANCE,
 }
 
 # 中文别名映射
@@ -413,6 +511,11 @@ TEMPLATE_ALIASES: dict[str, str] = {
     "提示词": "prompt",
     "直播": "live",
     "直播策划": "live",
+    "艺术漆客户": "paint_crm",
+    "漆客户": "paint_crm",
+    "艺术漆成本": "paint_finance",
+    "漆成本": "paint_finance",
+    "成本核算": "paint_finance",
 }
 
 

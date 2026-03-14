@@ -29,7 +29,7 @@ class ClaudeMixin:
 
         def _run():
             try:
-                persona = self._load_group_persona()
+                persona = self._load_group_persona(chat_id=sender_id)
 
                 # 铁律 + 人设 → system prompt（高权重）
                 is_video_group = self._is_video_group(sender_id)

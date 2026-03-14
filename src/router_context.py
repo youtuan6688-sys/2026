@@ -484,8 +484,13 @@ class ContextMixin:
 
     # ── Group Chat: 小叼毛 Persona ──
 
-    def _load_group_persona(self) -> str:
-        """Load the 小叼毛 persona prompt."""
+    def _load_group_persona(self, chat_id: str = "") -> str:
+        """Load the 小叼毛 persona prompt. Supports per-group overrides."""
+        # 优先级: 群专属人设 > 全局人设 > 默认
+        if chat_id:
+            group_file = GROUP_PERSONA_FILE.parent / f"{chat_id}.md"
+            if group_file.exists():
+                return group_file.read_text(encoding="utf-8")
         if GROUP_PERSONA_FILE.exists():
             return GROUP_PERSONA_FILE.read_text(encoding="utf-8")
         return "你是小叼毛，一个嘴贱但靠谱的 AI 助手。雅痞风格，喜欢开玩笑但干活从不含糊。"

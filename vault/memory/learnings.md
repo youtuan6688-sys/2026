@@ -39,3 +39,11 @@ AUTOFIX: intent_classify_error — `classify_intent` 的异常信息只有 `err`
 - /context 命令用途: 输出当前会话上下文占用分析 + 可操作优化建议（识别膨胀工具/内存）
 - Agent Teams 模式: lead agent 通过 tmux 分配任务给多个 teammate，适合大型重构或多模块并行开发
 - Context Gateway 模式: 在 Agent 和 LLM API 之间加压缩中间层，自动截断历史避免 compaction
+
+## 2026-03-13 - 错误分析
+PATTERN: Claude Code execution 失败（timeout/crash/retries exhausted） | 3次 | execute_claude 的超时和重试机制需要加固，可能是单次任务耗时过长或 Claude CLI 进程异常退出
+PATTERN: 属性访问 NoneType/缺失属性 | 2次 | url_processing 和 query_knowledge_base 缺少防御性空值检查
+
+AUTOFIX: `url_processing` — 在访问 `Block.paragraph` 前加类型检查：`if hasattr(block, 'paragraph') and block.paragraph`，跳过非段落类型的 Block
+AUTOFIX: `query_knowledge_base` — 在 `.get()` 调用前加空值守卫：`if result is None: return default_value`
+AUTOFIX: `execute_claude` — 将 5min timeout 提升至 8min（与 claude_runner.py 的 480s 对齐），crash 时捕获进程退出码并记录到日志
