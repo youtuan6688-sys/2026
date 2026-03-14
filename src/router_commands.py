@@ -443,12 +443,8 @@ class CommandsMixin:
                 self.sender.send_text(sender_id, "用法: /bt export <app_token> <table_id> [md|csv]")
                 return
             # Parse: /bt export <app_token> <table_id> [format]
-            export_parts = parts[2].split() if len(parts) == 3 else [parts[2], parts[3]]
-            if len(export_parts) < 2:
-                self.sender.send_text(sender_id, "用法: /bt export <app_token> <table_id> [md|csv]")
-                return
-            app_token, table_id = export_parts[0], export_parts[1]
-            fmt = export_parts[2] if len(export_parts) > 2 else "md"
+            app_token, table_id = parts[2], parts[3]
+            fmt = parts[4] if len(parts) > 4 else "md"
             self.sender.send_text(sender_id, f"正在导出...")
             if fmt == "csv":
                 data = self.bitable_manager.export_to_csv(app_token, table_id)

@@ -122,6 +122,12 @@
 ## CLI Tools (Installed via Homebrew)
 - ffmpeg 8.0: 音视频处理（转码、剪辑、提取音频）
 - yt-dlp 2026.3: 视频下载（YouTube、B站、抖音等）— 抖音需 cookies，fallback 到 ADB
+- camoufox-cli: 反检测浏览器自动化 CLI（C++ 级指纹伪装，绕过 bot 检测/CAPTCHA）
+  - 安装：npm install -g camoufox-cli + camoufox-cli install
+  - 核心命令：open <url> / snapshot -i / click @ref / fill @ref "text"
+  - Claude Code Skill 已安装：~/.claude/skills/camoufox-cli
+  - 用途：当 Playwright/Chrome DevTools 被反爬拦截时的升级方案
+  - 与 playwright 的区别：playwright 用 Chromium（容易被检测），camoufox 用反检测 Firefox
 - scrcpy 3.3.4: Android 手机投屏/录屏（用于抖音视频录制 fallback）
 - jq 1.8: JSON 处理和查询
 - pandoc 3.9: 文档格式转换（Markdown↔HTML↔PDF↔DOCX）
@@ -227,3 +233,12 @@ Priority order for self-evolution:
 - mcp2cli (pip install mcp2cli): MCP Server token 节省工具，将 MCP 调用路由到 CLI 减少 token 消耗 — 需适配
 - Claude Code v2.1.74: autoMemoryDirectory + modelOverrides 新功能 — 可直接用（npm update -g @anthropic-ai/claude-code）
 - ContextEngine (OpenClaw 插件): 280K+ stars 项目的插件架构，适合扩展 Claude 上下文管理 — 参考
+
+
+### 2026-03-13 - 新发现工具
+- Context Gateway (https://github.com/Compresr-ai/Context-Gateway): Agent 上下文压缩代理，坐在 Agent 和 LLM API 之间自动压缩历史 — 需适配
+- claude-code-mcp/steipete (https://github.com/steipete/claude-code-mcp): 将 Claude Code 作为 MCP Server，实现 agent-in-agent，`npm install -g claude-code-mcp` — 可直接用
+- awesome-claude-code (https://github.com/hesreallyhim/awesome-claude-code): Skills/hooks/agents/plugins 大全，含 hooks 智能激活 Skill 方案 — 参考
+- awesome-claude-skills (https://github.com/travisvn/awesome-claude-skills): Claude Skills 策展列表，1234+ 跨平台 agentic skills — 参考
+- shanraisshan/claude-code-best-practice (https://github.com/shanraisshan/claude-code-best-practice): 完整 CLAUDE.md 模板，含 phase-gated plan + cross-model review 模式 — 需适配
+- canirun.ai (https://canirun.ai): 本地 AI 硬件检测工具，判断能跑哪些模型 — 参考

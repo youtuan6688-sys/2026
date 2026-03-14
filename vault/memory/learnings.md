@@ -31,3 +31,11 @@ PATTERN: 对象属性访问未做 None 检查 | 2次 (NoneType.get + Block.parag
 AUTOFIX: kb_query_error — `query_knowledge_base` 中对返回结果加 None 守卫：`result = data.get('key') if data else None`
 AUTOFIX: url_parse_error — `url_processing` 中解析 Block 前检查类型：`if hasattr(block, 'paragraph')` 再访问
 AUTOFIX: intent_classify_error — `classify_intent` 的异常信息只有 `err`，补全 `except Exception as e: logger.error(f"intent_classify_error: {e}")` 以便定位根因
+
+
+## 2026-03-13 - 深度吸收
+- /loop 定时任务语法: `/loop 5m <任务描述>` — Claude Code 内置后台轮询，最长运行 3 天，可替代简单 cron
+- autoMemoryDirectory 配置: 在 ~/.claude/settings.json 中设 `"autoMemoryDirectory": "/path/to/vault/memory/claude-auto"` 可将 auto-memory 指向 Obsidian vault 统一管理
+- /context 命令用途: 输出当前会话上下文占用分析 + 可操作优化建议（识别膨胀工具/内存）
+- Agent Teams 模式: lead agent 通过 tmux 分配任务给多个 teammate，适合大型重构或多模块并行开发
+- Context Gateway 模式: 在 Agent 和 LLM API 之间加压缩中间层，自动截断历史避免 compaction

@@ -118,15 +118,29 @@ def _run_claude_streaming(
         for line in proc.stderr:
             stderr_chunks.append(line.decode("utf-8", errors="replace"))
 
+    def _watchdog():
+        """Kill process if deadline exceeded (fixes blocking stdout read)."""
+        nonlocal timed_out
+        import time
+        remaining = timeout
+        while remaining > 0 and proc.poll() is None:
+            time.sleep(min(5, remaining))
+            remaining -= 5
+        if proc.poll() is None:
+            timed_out = True
+            logger.warning(f"Watchdog: killing process after {timeout}s timeout")
+            proc.kill()
+
     stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
     stderr_thread.start()
+    watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+    watchdog_thread.start()
 
     try:
-        # Read stdout line by line with timeout enforcement
-        deadline = datetime.now().timestamp() + timeout
+        # Read stdout line by line; watchdog thread enforces timeout
+        # even when stdout is blocked (e.g. claude doing web search)
         for raw_line in proc.stdout:
-            if datetime.now().timestamp() > deadline:
-                timed_out = True
+            if timed_out:
                 break
 
             line = raw_line.decode("utf-8", errors="replace").strip()
