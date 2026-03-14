@@ -53,6 +53,10 @@ class FilesMixin:
 
         user_id = sender_open_id or sender_id
 
+        # image 类型的 file_name 通常是 image_key（无扩展名），补上 .png
+        if msg_type == "image" and file_name and "." not in file_name:
+            file_name = f"{file_name}.png"
+
         self._log_file_request(user_id, sender_id, chat_type, msg_type, file_name, file_key)
 
         if file_name and file_handler.is_supported(file_name):
@@ -70,7 +74,8 @@ class FilesMixin:
                 pass
 
             self._analyze_file(sender_id, msg_type, file_name, file_key,
-                               message_id, chat_type, user_prompt=auto_prompt)
+                               message_id, chat_type, user_prompt=auto_prompt,
+                               sender_open_id=sender_open_id)
         else:
             type_labels = {"file": "文件", "image": "图片", "audio": "语音", "video": "视频", "media": "媒体"}
             label = type_labels.get(msg_type, msg_type)
@@ -129,7 +134,7 @@ class FilesMixin:
 
     def _analyze_file(self, sender_id: str, msg_type: str, file_name: str,
                        file_key: str, message_id: str, chat_type: str,
-                       user_prompt: str = ""):
+                       user_prompt: str = "", sender_open_id: str = ""):
         """Download, parse, and analyze a supported file."""
         # File-level dedup: skip if same file+prompt processed recently
         if _file_is_duplicate(file_key, user_prompt):
@@ -156,68 +161,99 @@ class FilesMixin:
 
             self.sender.send_text(sender_id, f"收到「{file_name}」，正在分析... ⏳")
 
+            # Resolve user name for @mention in group replies
+            user_name = ""
+            if sender_open_id and sender_id.startswith("oc_"):
+                user_name = self.contacts.get_name(sender_open_id) if hasattr(self, 'contacts') else ""
+
+            if category == "image":
+                # Claude Code 的 Read 工具原生支持看图片，直接传文件路径
+                img_prompt = (
+                    f"请先用 Read 工具读取图片文件：{file_path}\n"
+                    f"然后详细分析图片内容。"
+                )
+                if user_prompt:
+                    img_prompt += f"\n用户要求：{user_prompt}"
+                else:
+                    img_prompt += (
+                        "\n如果包含文字，提取全部文字内容。"
+                        "如果包含数据/图表，提取关键数据。"
+                        "如果是截图/照片，描述画面并分析。"
+                    )
+
+                analysis = self.quota.call_claude(
+                    img_prompt, "sonnet", timeout=90,
+                )
+                if analysis:
+                    self._send_long_text(
+                        sender_id, f"📷 图片分析结果：\n\n{analysis}",
+                        at_user_id=sender_open_id, at_user_name=user_name,
+                    )
+                else:
+                    self.sender.send_text(
+                        sender_id, f"分析图片时 AI 没有返回结果，请稍后重试 😵",
+                    )
+                return
+
             content_text, _ = file_handler.parse_file(
                 file_path, file_name,
                 gemini_api_key=settings.gemini_api_key,
                 user_prompt=user_prompt,
             )
 
-            if category == "image":
-                reply = f"📷 图片分析结果：\n\n{content_text}"
-                self.sender.send_text(sender_id, reply)
+            # 非图片文件：Excel/CSV/PDF 走文本解析 + Claude 分析
+            sys_rules = (
+                "你是数据分析助手。严格规则：\n"
+                "1. 严禁编造数据！所有数字、百分比、排名必须直接来自下方文件内容。"
+                "没有的数据就说「文件中无此信息」，绝不编造、不推算、不举例。\n"
+                "2. 严禁编造操作！你不能创建文件、导出Excel、打包zip、生成下载链接。"
+                "不要说「已生成」「已导出」「已打包」「已拆分成文件」等暗示你执行了文件操作的话。"
+                "你只能分析数据和回答问题。\n"
+                "3. 不要承诺做不到的事（实时监控、自动提醒、定时推送等）。\n"
+                "4. 先给结论，再给数据支撑。用 markdown 表格展示数据。\n"
+                "5. 推测性结论标注「⚠️ 推测」。\n"
+            )
+            if chat_type == "group":
+                sys_rules += (
+                    "6. 群聊模式：直接给结果，不寒暄、不角色扮演、不emoji轰炸。"
+                    "结论→数据→建议，500字以内。\n"
+                )
+
+            if user_prompt:
+                prompt = (
+                    f"文件「{file_name}」({category.upper()}) 内容：\n\n"
+                    f"{content_text}\n\n"
+                    f"用户要求：{user_prompt}"
+                )
             else:
-                # 铁律放 system prompt（高权重）
-                sys_rules = (
-                    "你是数据分析助手。严格规则：\n"
-                    "1. 严禁编造数据！所有数字、百分比、排名必须直接来自下方文件内容。"
-                    "没有的数据就说「文件中无此信息」，绝不编造、不推算、不举例。\n"
-                    "2. 严禁编造操作！你不能创建文件、导出Excel、打包zip、生成下载链接。"
-                    "不要说「已生成」「已导出」「已打包」「已拆分成文件」等暗示你执行了文件操作的话。"
-                    "你只能分析数据和回答问题。\n"
-                    "3. 不要承诺做不到的事（实时监控、自动提醒、定时推送等）。\n"
-                    "4. 先给结论，再给数据支撑。用 markdown 表格展示数据。\n"
-                    "5. 推测性结论标注「⚠️ 推测」。\n"
-                )
-                if chat_type == "group":
-                    sys_rules += (
-                        "6. 群聊模式：直接给结果，不寒暄、不角色扮演、不emoji轰炸。"
-                        "结论→数据→建议，500字以内。\n"
-                    )
-
-                if user_prompt:
-                    prompt = (
-                        f"文件「{file_name}」({category.upper()}) 内容：\n\n"
-                        f"{content_text}\n\n"
-                        f"用户要求：{user_prompt}"
-                    )
-                else:
-                    prompt = (
-                        f"文件「{file_name}」({category.upper()}) 内容：\n\n"
-                        f"{content_text}\n\n"
-                        f"请分析：1.数据概况 2.关键指标 3.趋势洞察 4.建议"
-                    )
-
-                analysis = self.quota.call_claude(
-                    prompt, "sonnet", timeout=90,
-                    extra_args=["--append-system-prompt", sys_rules],
+                prompt = (
+                    f"文件「{file_name}」({category.upper()}) 内容：\n\n"
+                    f"{content_text}\n\n"
+                    f"请分析：1.数据概况 2.关键指标 3.趋势洞察 4.建议"
                 )
 
-                if analysis:
-                    self.sender.send_text(
-                        sender_id,
-                        f"📊 「{file_name}」分析结果：\n\n{analysis}",
-                    )
-                else:
-                    self.sender.send_text(
-                        sender_id,
-                        f"分析「{file_name}」时 AI 没有返回结果，请稍后重试 😵",
-                    )
+            analysis = self.quota.call_claude(
+                prompt, "sonnet", timeout=90,
+                extra_args=["--append-system-prompt", sys_rules],
+            )
 
-                # 自动生成图表（仅 Excel/CSV）
-                if category in ("excel", "csv"):
-                    self._generate_and_send_charts(
-                        sender_id, file_path, file_name, category,
-                    )
+            if analysis:
+                self._send_long_text(
+                    sender_id,
+                    f"📊 「{file_name}」分析结果：\n\n{analysis}",
+                    at_user_id=sender_open_id, at_user_name=user_name,
+                )
+            else:
+                self.sender.send_text(
+                    sender_id,
+                    f"分析「{file_name}」时 AI 没有返回结果，请稍后重试 😵",
+                )
+
+            # 自动生成图表（仅 Excel/CSV）
+            if category in ("excel", "csv"):
+                self._generate_and_send_charts(
+                    sender_id, file_path, file_name, category,
+                )
         finally:
             try:
                 file_path.unlink(missing_ok=True)
@@ -522,6 +558,10 @@ class FilesMixin:
         if not file_key:
             return False
 
+        # image 类型的 file_name 通常是 image_key（无扩展名），补上 .png
+        if msg_type == "image" and "." not in file_name:
+            file_name = f"{file_name}.png"
+
         logger.info(f"Quoted file detected: type={msg_type}, name={file_name}, key={file_key}")
 
         user_id = sender_open_id or sender_id
@@ -531,6 +571,7 @@ class FilesMixin:
             self._analyze_file(
                 sender_id, msg_type, file_name, file_key,
                 message_id, chat_type, user_prompt=user_text,
+                sender_open_id=sender_open_id,
             )
         else:
             type_labels = {"file": "文件", "image": "图片", "media": "媒体"}
