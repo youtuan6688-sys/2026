@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     chromadb_path: str = str(PROJECT_ROOT / "data" / "chromadb")
     sqlite_path: str = str(PROJECT_ROOT / "data" / "content.db")
 
+    # Bitable
+    bitable_default_app_token: str = ""
+    bitable_ticket_table_id: str = ""
+
     # Behavior
     log_level: str = "INFO"
     max_content_length: int = 50000
