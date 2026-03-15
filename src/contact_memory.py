@@ -18,7 +18,26 @@ from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+
+def _read_profile_dir(profile_dir: Path) -> str:
+    """Read all .md files from a profile directory, return combined text."""
+    parts = []
+    for md in sorted(profile_dir.glob("*.md")):
+        try:
+            content = md.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+        except Exception:
+            continue
+    if not parts:
+        return ""
+    combined = "\n---\n".join(parts)
+    if len(combined) > 1500:
+        combined = combined[:1500] + "..."
+    return combined
+
 CONTACTS_DIR = Path("/Users/tuanyou/Happycode2026/vault/memory/contacts")
+MEMORY_DIR = Path("/Users/tuanyou/Happycode2026/vault/memory")
 
 
 class ContactMemory:
@@ -236,7 +255,42 @@ class ContactMemory:
         if log:
             parts.append(f"历史对话记忆:\n{log}")
 
+        # Extended profile from vault/memory/{name}/ subdirectory
+        ext = self._load_extended_profile(profile)
+        if ext:
+            parts.append(f"详细档案:\n{ext}")
+
         return "\n".join(parts)
+
+    @staticmethod
+    def _load_extended_profile(profile: dict) -> str:
+        """Load extended profile from vault/memory/{nickname_or_name}/ if exists.
+
+        Scans for subdirectory matching the user's nickname or name,
+        reads .md files (profile.md, needs.md, business.md, etc.).
+        Returns combined content, capped at 1500 chars.
+        """
+        # Check explicit profile_dir first, then scan by name
+        profile_dir_name = profile.get("profile_dir", "")
+        if profile_dir_name:
+            profile_dir = MEMORY_DIR / profile_dir_name
+            if profile_dir.is_dir():
+                return _read_profile_dir(profile_dir)
+
+        # Scan by nickname/name match
+        candidates = []
+        for key in ("nickname", "name"):
+            val = profile.get(key, "")
+            if val and len(val) >= 2:
+                candidates.append(val.lower())
+
+        for candidate in candidates:
+            for subdir in MEMORY_DIR.iterdir():
+                if not subdir.is_dir() or subdir.name in ("contacts", "groups", "archive"):
+                    continue
+                if candidate in subdir.name.lower():
+                    return _read_profile_dir(subdir)
+        return ""
 
     def set_name(self, open_id: str, name: str):
         """Set a user's name from an external source (e.g. member events)."""
