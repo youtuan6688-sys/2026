@@ -52,6 +52,26 @@ def main():
     except Exception as e:
         logger.warning(f"Embedding model pre-warm failed (will retry on first query): {e}")
 
+    # Auto-reindex if article count changed since last index
+    try:
+        vault = Path(settings.vault_path)
+        article_count = sum(1 for d in ("articles", "social", "docs")
+                           if (vault / d).exists()
+                           for _ in (vault / d).glob("*.md"))
+        indexed_count = vector_store.collection.count()
+        if article_count > indexed_count:
+            logger.info(f"New articles detected ({article_count} files vs {indexed_count} indexed), reindexing...")
+            import subprocess
+            subprocess.Popen(
+                [sys.executable, "scripts/reindex_vault.py"],
+                cwd=str(vault.parent),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            logger.info(f"Vector store up to date ({indexed_count} docs, {article_count} files)")
+    except Exception as e:
+        logger.warning(f"Auto-reindex check failed: {e}")
+
     logger.info("All components initialized. Starting Feishu listener...")
 
     # Start Feishu WebSocket listener (blocking)
