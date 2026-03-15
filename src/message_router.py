@@ -360,6 +360,14 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
                     sender_id, "/work 命令仅限视频拆解群使用 🔒"
                 )
             return
+        if stripped.startswith("/research"):
+            if user_id == task_scheduler.ADMIN_OPEN_ID:
+                self._handle_research_command(stripped, sender_id)
+            else:
+                self.sender.send_text(
+                    sender_id, "/research 仅限管理员使用 🔒"
+                )
+            return
 
         # URLs → music detection + video auto-analyze + knowledge base save
         urls = extract_urls(text)

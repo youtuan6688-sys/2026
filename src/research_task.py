@@ -17,8 +17,9 @@ import logging
 import os
 import signal
 import subprocess
+import tempfile
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -29,13 +30,13 @@ RESEARCH_DIR = PROJECT_DIR / "data" / "research"
 CLAUDE_BIN = "/Users/tuanyou/.local/bin/claude"
 MONITOR_INTERVAL = 180  # 3 minutes
 DEFAULT_MAX_TURNS = 40
-MAX_CONCURRENT = 1
+MAX_ALLOWED_TURNS = 100
 ALLOWED_TOOLS = "WebSearch,WebFetch,Read,Write,Edit,Bash,Glob,Grep"
 
 
-@dataclass
+@dataclass(frozen=True)
 class ResearchTask:
-    """Persistent research task state."""
+    """Persistent research task state (immutable)."""
 
     task_id: str
     title: str
@@ -56,6 +57,7 @@ class ResearchTaskManager:
     def __init__(self, sender, quota):
         self.sender = sender
         self.quota = quota
+        self._lock = threading.Lock()
         self._monitor_threads: dict[str, threading.Event] = {}
 
     # ── Public API ──
@@ -63,6 +65,8 @@ class ResearchTaskManager:
     def start(self, description: str, sender_id: str,
               max_turns: int = DEFAULT_MAX_TURNS) -> ResearchTask | None:
         """Create and launch a research task. Returns task or None on failure."""
+        max_turns = min(max(1, max_turns), MAX_ALLOWED_TURNS)
+
         # Guard: only 1 concurrent task
         active = self._get_active_task()
         if active:
@@ -116,7 +120,6 @@ class ResearchTaskManager:
         """Return human-readable status of active or most recent task."""
         task = self._get_active_task()
         if not task:
-            # Check for most recent completed task
             recent = self._get_recent_tasks(limit=1)
             if recent:
                 t = recent[0]
@@ -128,7 +131,6 @@ class ResearchTaskManager:
                 )
             return "无研究任务记录"
 
-        # Read progress.json for live status
         progress = self._read_progress(task)
         lines = [
             f"📊 研究任务进行中",
@@ -141,7 +143,7 @@ class ResearchTaskManager:
             done = progress.get("phases_completed", [])
             remaining = progress.get("phases_remaining", [])
             summary = progress.get("summary", "")
-            total = len(done) + len(remaining) + 1  # +1 for current
+            total = len(done) + len(remaining) + 1
             lines.append(f"阶段: {phase} ({len(done)}/{total})")
             if summary:
                 lines.append(f"进展: {summary}")
@@ -166,14 +168,17 @@ class ResearchTaskManager:
                 pass
 
         # Stop monitor
-        stop_event = self._monitor_threads.get(task.task_id)
+        with self._lock:
+            stop_event = self._monitor_threads.get(task.task_id)
         if stop_event:
             stop_event.set()
 
-        # Update state
-        task.status = "cancelled"
-        task.completed_at = datetime.now().isoformat()
-        self._save_task(task)
+        # Update state (immutable)
+        updated = replace(
+            task, status="cancelled",
+            completed_at=datetime.now().isoformat(),
+        )
+        self._save_task(updated)
 
         self.sender.send_text(
             sender_id,
@@ -217,12 +222,9 @@ class ResearchTaskManager:
             "summary": "任务启动中",
             "turns_used": 0,
         }
-        (ws / "progress.json").write_text(
-            json.dumps(progress, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._atomic_write(ws / "progress.json", progress)
 
-        # task.md — the prompt file Claude will read
+        # task.md
         task_md = self._build_task_md(task)
         (ws / "task.md").write_text(task_md, encoding="utf-8")
 
@@ -307,25 +309,30 @@ class ResearchTaskManager:
 
         stdout_file = open(ws / "claude_stdout.txt", "w", encoding="utf-8")
         stderr_file = open(ws / "claude_stderr.txt", "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                cwd=str(ws),
+                env=env,
+            )
+        except Exception:
+            stdout_file.close()
+            stderr_file.close()
+            raise
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=stdout_file,
-            stderr=stderr_file,
-            cwd=str(ws),
-            env=env,
-        )
-
-        task.pid = proc.pid
-        self._save_task(task)
+        updated = replace(task, pid=proc.pid)
+        self._save_task(updated)
         logger.info(f"Research task launched: {task.task_id} PID={proc.pid}")
 
         # Start monitor thread
         stop_event = threading.Event()
-        self._monitor_threads[task.task_id] = stop_event
+        with self._lock:
+            self._monitor_threads[task.task_id] = stop_event
         monitor = threading.Thread(
             target=self._monitor_loop,
-            args=(task, proc, stop_event, stdout_file, stderr_file),
+            args=(updated, proc, stop_event, stdout_file, stderr_file),
             daemon=True,
         )
         monitor.start()
@@ -340,47 +347,50 @@ class ResearchTaskManager:
         ws = Path(task.workspace)
         progress_file = ws / "progress.json"
 
-        while not stop_event.wait(MONITOR_INTERVAL):
-            # Check if process is still running
-            if proc.poll() is not None:
-                break
+        try:
+            while not stop_event.wait(MONITOR_INTERVAL):
+                if proc.poll() is not None:
+                    break
 
-            # Check progress.json for updates
-            try:
-                if progress_file.exists():
-                    mtime = progress_file.stat().st_mtime
-                    if mtime > last_progress_mtime:
-                        last_progress_mtime = mtime
-                        progress = json.loads(
-                            progress_file.read_text(encoding="utf-8")
-                        )
-                        self._report_progress(task, progress)
-            except Exception as e:
-                logger.warning(f"Progress check failed: {e}")
+                try:
+                    if progress_file.exists():
+                        mtime = progress_file.stat().st_mtime
+                        if mtime > last_progress_mtime:
+                            last_progress_mtime = mtime
+                            progress = json.loads(
+                                progress_file.read_text(encoding="utf-8")
+                            )
+                            self._report_progress(task, progress)
+                except Exception as e:
+                    logger.warning(f"Progress check failed: {e}")
 
-        # Process ended — determine outcome
-        stdout_file.close()
-        stderr_file.close()
+            # Reap the process to avoid zombie
+            proc.wait(timeout=30)
+        finally:
+            stdout_file.close()
+            stderr_file.close()
 
-        exit_code = proc.poll()
+        exit_code = proc.returncode
         report_path = ws / "output" / "report.md"
         has_report = report_path.exists() and report_path.stat().st_size > 100
 
-        if exit_code == 0 and has_report:
-            task.status = "completed"
-        elif has_report:
-            task.status = "completed"  # report exists even if exit non-zero
+        if has_report:
+            status = "completed"
+        elif exit_code == 0:
+            status = "completed"
         else:
-            task.status = "failed"
+            status = "failed"
 
-        task.completed_at = datetime.now().isoformat()
-        self._save_task(task)
+        updated = replace(
+            task, status=status,
+            completed_at=datetime.now().isoformat(),
+        )
+        self._save_task(updated)
 
-        # Clean up monitor reference
-        self._monitor_threads.pop(task.task_id, None)
+        with self._lock:
+            self._monitor_threads.pop(task.task_id, None)
 
-        # Final notification
-        self._report_completion(task)
+        self._report_completion(updated)
 
     def _report_progress(self, task: ResearchTask, progress: dict) -> None:
         """Send progress update to Feishu."""
@@ -406,7 +416,6 @@ class ResearchTaskManager:
         ws = Path(task.workspace)
 
         if task.status == "completed":
-            # Calculate duration
             duration = ""
             try:
                 start = datetime.fromisoformat(task.started_at)
@@ -425,7 +434,6 @@ class ResearchTaskManager:
                 f"📁 工作目录: {task.workspace}",
             )
 
-            # Send report file
             if report_path.exists():
                 try:
                     self.sender.send_file(
@@ -435,13 +443,11 @@ class ResearchTaskManager:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to send report file: {e}")
-                    # Fallback: send report content as text
                     content = report_path.read_text(encoding="utf-8")
                     if len(content) > 3500:
                         content = content[:3500] + "\n\n...(报告已截断，完整版在工作目录)"
                     self.sender.send_text(task.sender_id, f"📄 报告内容:\n\n{content}")
         else:
-            # Failed
             stderr_path = ws / "claude_stderr.txt"
             error_hint = ""
             if stderr_path.exists():
@@ -456,7 +462,6 @@ class ResearchTaskManager:
                 f"📁 工作目录: {task.workspace}",
             )
 
-        # Record quota usage
         try:
             self.quota.record_call("sonnet", task.status == "completed", "")
         except Exception:
@@ -465,37 +470,54 @@ class ResearchTaskManager:
     # ── State Persistence ──
 
     def _save_task(self, task: ResearchTask) -> None:
-        """Save task state to state.json in workspace."""
-        task.updated_at = datetime.now().isoformat()
-        ws = Path(task.workspace)
+        """Atomically save task state to state.json in workspace."""
+        updated = replace(task, updated_at=datetime.now().isoformat())
+        ws = Path(updated.workspace)
         ws.mkdir(parents=True, exist_ok=True)
         state_file = ws / "state.json"
-        state_file.write_text(
-            json.dumps(asdict(task), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        self._atomic_write(state_file, asdict(updated))
+
+    @staticmethod
+    def _atomic_write(path: Path, data: dict) -> None:
+        """Write JSON atomically via temp file + rename."""
+        content = json.dumps(data, ensure_ascii=False, indent=2)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), suffix=".tmp",
         )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
+            Path(tmp_path).replace(path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _get_active_task(self) -> ResearchTask | None:
         """Find the currently running research task."""
         if not RESEARCH_DIR.exists():
             return None
         for task_dir in sorted(RESEARCH_DIR.iterdir(), reverse=True):
+            if not task_dir.is_dir():
+                continue
             state_file = task_dir / "state.json"
             if state_file.exists():
                 try:
                     data = json.loads(state_file.read_text(encoding="utf-8"))
                     task = ResearchTask(**data)
                     if task.status == "running":
-                        # Verify process is actually alive
                         if task.pid:
                             try:
                                 os.kill(task.pid, 0)
                                 return task
                             except ProcessLookupError:
-                                # Process dead, mark as failed
-                                task.status = "failed"
-                                task.completed_at = datetime.now().isoformat()
-                                self._save_task(task)
+                                failed = replace(
+                                    task, status="failed",
+                                    completed_at=datetime.now().isoformat(),
+                                )
+                                self._save_task(failed)
                                 continue
                         return task
                 except Exception as e:
@@ -510,6 +532,8 @@ class ResearchTaskManager:
         for task_dir in sorted(RESEARCH_DIR.iterdir(), reverse=True):
             if len(tasks) >= limit:
                 break
+            if not task_dir.is_dir():
+                continue
             state_file = task_dir / "state.json"
             if state_file.exists():
                 try:
