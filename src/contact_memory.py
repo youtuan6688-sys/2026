@@ -332,20 +332,38 @@ class ContactMemory:
         logger.warning(f"Could not resolve name for {open_id}")
         return ""
 
-    # Known group chat IDs where bot is a member
-    _KNOWN_CHATS = [
-        "oc_4f17f731a0a3bf9489c095c26be6dedc",
-        "oc_d7120356187aed1e651863428e55ab47",  # 人工智障测试组
-        "oc_d42807f92f606dc0b448f16c6c42fece",  # 爆款视频拆解实验室 (旧)
-        "oc_494f1c2a811f65378639269461ba312f",  # 爆款视频拆解 (新·陈维玺)
-        "oc_2112c9fc35ba504c314b116b3ecd6eb5",  # 胖虎的山洞
-    ]
+    # Dynamic chat list cache (replaces hardcoded _KNOWN_CHATS)
+    _chat_list_cache: list[str] = []
+    _chat_list_updated: str = ""
+
+    def _get_bot_chats(self) -> list[str]:
+        """Get list of group chats the bot is a member of (cached 1 day)."""
+        from datetime import date
+        today = date.today().isoformat()
+        if self._chat_list_cache and self._chat_list_updated == today:
+            return self._chat_list_cache
+
+        try:
+            from lark_oapi.api.im.v1 import ListChatRequest
+            req = ListChatRequest.builder().page_size(50).build()
+            resp = self._client.im.v1.chat.list(req)
+            if resp.success() and resp.data and resp.data.items:
+                chats = [c.chat_id for c in resp.data.items if c.chat_id]
+                ContactMemory._chat_list_cache = chats
+                ContactMemory._chat_list_updated = today
+                logger.info(f"Refreshed bot chat list: {len(chats)} groups")
+                return chats
+        except Exception as e:
+            logger.warning(f"Failed to list bot chats: {e}")
+
+        # Return stale cache if API fails
+        return self._chat_list_cache
 
     def _fetch_name_from_chats(self, open_id: str) -> str:
         """Fallback: find user name by listing chat members."""
         from lark_oapi.api.im.v1 import GetChatMembersRequest
 
-        for chat_id in self._KNOWN_CHATS:
+        for chat_id in self._get_bot_chats():
             try:
                 req = GetChatMembersRequest.builder().chat_id(chat_id).build()
                 resp = self._client.im.v1.chat_members.get(req)

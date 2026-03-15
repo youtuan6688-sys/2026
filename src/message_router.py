@@ -11,6 +11,8 @@ Split into mixins for maintainability:
 """
 
 import logging
+import threading
+import uuid
 from collections import deque
 from pathlib import Path
 
@@ -147,9 +149,18 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
     # ── Main Entry Point ──
     # ══════════════════════════════════════
 
+    # Thread-local storage for request tracing
+    _trace = threading.local()
+
     def handle_message(self, sender_id: str, text: str, raw_message=None,
                        chat_type: str = "p2p", sender_open_id: str = ""):
         """Route messages with smart intent detection."""
+        # Set request_id for this message (Feishu message_id or UUID fallback)
+        msg_id = getattr(raw_message, "message_id", None) if raw_message else None
+        request_id = msg_id or str(uuid.uuid4())[:12]
+        self._trace.request_id = request_id
+        logger.info(f"[req:{request_id}] Incoming {chat_type} from {sender_id}: {text[:80]}")
+
         stripped = text.strip()
 
         # Quoted/reply message — check BEFORE empty-text guard so that

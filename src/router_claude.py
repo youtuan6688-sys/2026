@@ -27,9 +27,11 @@ class ClaudeMixin:
     def _execute_claude_group(self, prompt: str, sender_id: str,
                               user_id: str = ""):
         """Execute Claude with 小叼毛 persona for group chat."""
+        req_id = getattr(self._trace, "request_id", "?")
 
         def _run():
             try:
+                logger.info(f"[req:{req_id}] Group Claude execution for {sender_id}")
                 persona = self._load_group_persona(chat_id=sender_id)
 
                 # 铁律 + 人设 → system prompt（高权重）
@@ -201,10 +203,12 @@ class ClaudeMixin:
         Falls back to run_with_resume() for long tasks or when Brain fails.
         """
         self.sender.send_text(sender_id, f"思考中... \n> {prompt[:100]}")
+        req_id = getattr(self._trace, "request_id", "?")
 
         def _run():
             ltm = LongTaskManager()
             try:
+                logger.info(f"[req:{req_id}] Claude execution start for {sender_id}")
                 # Start long task tracking if flagged
                 if is_long_task:
                     ltm.start(prompt, sender_id)

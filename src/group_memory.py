@@ -180,7 +180,8 @@ class GroupMemory:
     def update_group_profile(self, chat_id: str, profile_text: str):
         """Update group-specific identity/theme overlay (max 500 chars)."""
         data = self.load(chat_id)
-        updated = {**data, "group_profile": profile_text[:500]}
+        updated = {**data, "group_profile": profile_text[:500],
+                   "profile_updated": date.today().isoformat()}
         self.save(chat_id, updated)
 
     def format_context(self, chat_id: str) -> str:
@@ -293,13 +294,27 @@ class GroupMemory:
                 "\n".join(o["note"] for o in existing_obs)
             )
 
-        # Include group profile discovery for new/profileless groups
+        # Include group profile discovery/refresh
         has_profile = bool(profile.get("group_profile", ""))
+        profile_stale = False
+        if has_profile:
+            last_updated = profile.get("profile_updated", "")
+            if last_updated:
+                try:
+                    days_since = (date.today() - date.fromisoformat(last_updated)).days
+                    profile_stale = days_since >= 30
+                except ValueError:
+                    profile_stale = True
+            else:
+                profile_stale = True  # legacy profile without date
+
+        needs_profile_check = not has_profile or profile_stale
         profile_instruction = ""
-        if not has_profile:
+        if needs_profile_check:
+            existing_hint = f"（当前定位：{profile['group_profile']}）" if has_profile else ""
             profile_instruction = (
                 "8. 如果能判断出这个群的定位/主题（如：视频拆解群、投资讨论群），"
-                "在最后一行输出「群定位：xxx」（一句话描述）\n"
+                f"在最后一行输出「群定位：xxx」（一句话描述）{existing_hint}\n"
             )
 
         prompt = (
@@ -369,10 +384,10 @@ class GroupMemory:
             if topics:
                 self.update_topics(chat_id, topics)
 
-            # Save group profile (only if not already set)
-            if group_profile_text and not has_profile:
+            # Save group profile (new or refresh after 30 days)
+            if group_profile_text and needs_profile_check:
                 self.update_group_profile(chat_id, group_profile_text)
-                logger.info(f"Observer: discovered group profile for {chat_id}: {group_profile_text}")
+                logger.info(f"Observer: {'updated' if has_profile else 'discovered'} group profile for {chat_id}: {group_profile_text}")
 
             logger.info(
                 f"Observer: added {len(new_obs)} observations, "
