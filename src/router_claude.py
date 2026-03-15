@@ -294,7 +294,6 @@ class ClaudeMixin:
                 system_prompt += f"\n\n对话用户信息:\n{user_ctx}"
 
         task_id = f"chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-
         success, output = run_with_resume(
             full_prompt,
             task_id=task_id,

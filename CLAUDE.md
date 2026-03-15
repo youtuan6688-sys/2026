@@ -108,6 +108,7 @@ feishu_listener.py (WebSocket)
 ## Engineering Audit
 - 首次审计：2026-03-14（37 项问题，P0-P3 全部修复）
 - 审计日志：vault/logs/engineering-audit-2026-03-14.md
+- 工程全景：vault/logs/engineering-status-2026-03-14.md
 - 下次检核：2026-03-28
 - 修复记录：见 git log（68471cb → 2dec731，8 个 commits）
 
