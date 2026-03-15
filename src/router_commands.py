@@ -83,6 +83,10 @@ class CommandsMixin:
             "/bt export <token> <id> — 导出数据\n"
             "/memory-review — 记忆文件 Review\n"
             "/ticket — 任务追踪 (create/list/update)\n"
+            "/research <任务> — 启动研究任务（竞品分析/市场调研等）\n"
+            "/research status — 查看研究任务进度\n"
+            "/research stop — 停止当前研究任务\n"
+            "/research list — 历史研究任务\n"
             "\n直接发消息 — AI 对话\n"
             "发送链接 — 自动解析保存到知识库"
         )
@@ -623,6 +627,50 @@ class CommandsMixin:
             lines.append("确认后可手动编辑，或让我自动压缩（回复「自动清理」）")
 
         self._send_long_text(sender_id, "\n".join(lines))
+
+    # ── Research Task ──
+
+    def _handle_research_command(self, text: str, sender_id: str):
+        """Handle /research commands for autonomous research tasks.
+
+        Usage:
+            /research <任务描述>   — 启动研究任务
+            /research status      — 查看当前进度
+            /research stop        — 停止当前任务
+            /research list        — 历史任务列表
+        """
+        parts = text.strip().split(None, 1)
+        sub = parts[1].strip() if len(parts) > 1 else ""
+
+        if not sub:
+            self.sender.send_text(
+                sender_id,
+                "用法:\n"
+                "  /research <任务描述> — 启动研究任务\n"
+                "  /research status — 查看进度\n"
+                "  /research stop — 停止任务\n"
+                "  /research list — 历史列表\n\n"
+                "示例:\n"
+                "  /research 嘉宝莉艺术漆在小红书的竞品分析，对标三棵树和立邦",
+            )
+            return
+
+        if sub == "status":
+            status = self._get_research_manager().get_status(sender_id)
+            self.sender.send_text(sender_id, status)
+            return
+
+        if sub == "stop":
+            self._get_research_manager().stop(sender_id)
+            return
+
+        if sub == "list":
+            result = self._get_research_manager().list_tasks(sender_id)
+            self.sender.send_text(sender_id, result)
+            return
+
+        # Anything else is a task description
+        self._get_research_manager().start(sub, sender_id)
 
     # ── Ticket Management ──
 

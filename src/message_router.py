@@ -101,6 +101,7 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
         self._video_handler = None
         self._workspace_handler = None
         self._ecom_handler = None
+        self._research_manager = None
 
     # ── Feature Handlers (lazy init) ──
 
@@ -135,6 +136,12 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             from src.ecom.handler import EcomHandler
             self._ecom_handler = EcomHandler(self.sender, self.bitable_manager)
         return self._ecom_handler
+
+    def _get_research_manager(self):
+        if self._research_manager is None:
+            from src.research_task import ResearchTaskManager
+            self._research_manager = ResearchTaskManager(self.sender, self.quota)
+        return self._research_manager
 
     # Video analysis groups — auto-analyze video URLs dropped in these groups
     _VIDEO_GROUP_IDS = frozenset((
@@ -540,6 +547,9 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             return True
         if stripped.startswith("/ticket"):
             self._handle_ticket_command(stripped, sender_id)
+            return True
+        if stripped.startswith("/research"):
+            self._handle_research_command(stripped, sender_id)
             return True
         if stripped.startswith("/evolution") or stripped.startswith("/进化"):
             date_arg = stripped.split(" ", 1)[1].strip() if " " in stripped else ""
