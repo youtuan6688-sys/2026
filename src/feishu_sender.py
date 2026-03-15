@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from pathlib import Path
 
 import lark_oapi as lark
@@ -100,28 +101,34 @@ class FeishuSender:
         }
         self._send(open_id, "interactive", json.dumps(card, ensure_ascii=False))
 
-    def upload_image(self, image_path: str) -> str | None:
-        """Upload an image to Feishu and return the image_key."""
-        body = CreateImageRequestBody.builder() \
-            .image_type("message") \
-            .image(open(image_path, "rb")) \
-            .build()
+    def upload_image(self, image_path: str, _max_retries: int = 2) -> str | None:
+        """Upload an image to Feishu and return the image_key (with retry)."""
+        for attempt in range(_max_retries + 1):
+            try:
+                body = CreateImageRequestBody.builder() \
+                    .image_type("message") \
+                    .image(open(image_path, "rb")) \
+                    .build()
 
-        request = CreateImageRequest.builder() \
-            .request_body(body) \
-            .build()
+                request = CreateImageRequest.builder() \
+                    .request_body(body) \
+                    .build()
 
-        try:
-            response = self.client.im.v1.image.create(request)
-            if not response.success():
-                logger.error(f"Failed to upload image: code={response.code}, msg={response.msg}")
-                return None
-            image_key = response.data.image_key
-            logger.info(f"Image uploaded: {image_path} -> {image_key}")
-            return image_key
-        except Exception as e:
-            logger.error(f"Error uploading image: {e}", exc_info=True)
-            return None
+                response = self.client.im.v1.image.create(request)
+                if response.success():
+                    logger.info(f"Image uploaded: {image_path} -> {response.data.image_key}")
+                    return response.data.image_key
+                if not self._is_retryable(response.code) or attempt >= _max_retries:
+                    logger.error(f"Failed to upload image: code={response.code}, msg={response.msg}")
+                    return None
+                logger.warning(f"Retryable upload_image error (attempt {attempt + 1}): code={response.code}")
+            except Exception as e:
+                if attempt >= _max_retries:
+                    logger.error(f"Error uploading image: {e}", exc_info=True)
+                    return None
+                logger.warning(f"Upload image exception (attempt {attempt + 1}): {e}")
+            time.sleep(1 << attempt)
+        return None
 
     def send_image(self, open_id: str, image_path: str) -> bool:
         """Upload and send an image to a user. Returns True on success."""
@@ -132,8 +139,9 @@ class FeishuSender:
         self._send(open_id, "image", content)
         return True
 
-    def upload_file(self, file_path: str, file_name: str = "") -> str | None:
-        """Upload a file to Feishu IM and return the file_key.
+    def upload_file(self, file_path: str, file_name: str = "",
+                    _max_retries: int = 2) -> str | None:
+        """Upload a file to Feishu IM and return the file_key (with retry).
 
         Args:
             file_path: Local path to the file
@@ -154,27 +162,33 @@ class FeishuSender:
         }
         file_type = type_map.get(ext, "stream")
 
-        body = CreateFileRequestBody.builder() \
-            .file_type(file_type) \
-            .file_name(name) \
-            .file(open(file_path, "rb")) \
-            .build()
+        for attempt in range(_max_retries + 1):
+            try:
+                body = CreateFileRequestBody.builder() \
+                    .file_type(file_type) \
+                    .file_name(name) \
+                    .file(open(file_path, "rb")) \
+                    .build()
 
-        request = CreateFileRequest.builder() \
-            .request_body(body) \
-            .build()
+                request = CreateFileRequest.builder() \
+                    .request_body(body) \
+                    .build()
 
-        try:
-            response = self.client.im.v1.file.create(request)
-            if not response.success():
-                logger.error(f"Failed to upload file: code={response.code}, msg={response.msg}")
-                return None
-            file_key = response.data.file_key
-            logger.info(f"File uploaded: {name} -> {file_key}")
-            return file_key
-        except Exception as e:
-            logger.error(f"Error uploading file: {e}", exc_info=True)
-            return None
+                response = self.client.im.v1.file.create(request)
+                if response.success():
+                    logger.info(f"File uploaded: {name} -> {response.data.file_key}")
+                    return response.data.file_key
+                if not self._is_retryable(response.code) or attempt >= _max_retries:
+                    logger.error(f"Failed to upload file: code={response.code}, msg={response.msg}")
+                    return None
+                logger.warning(f"Retryable upload_file error (attempt {attempt + 1}): code={response.code}")
+            except Exception as e:
+                if attempt >= _max_retries:
+                    logger.error(f"Error uploading file: {e}", exc_info=True)
+                    return None
+                logger.warning(f"Upload file exception (attempt {attempt + 1}): {e}")
+            time.sleep(1 << attempt)
+        return None
 
     def send_file(self, receive_id: str, file_path: str,
                   file_name: str = "") -> bool:
@@ -235,33 +249,48 @@ class FeishuSender:
         }
         self._send(open_id, "interactive", json.dumps(card, ensure_ascii=False))
 
-    def _send(self, receive_id: str, msg_type: str, content: str):
-        """Send a message via Feishu IM API.
+    @staticmethod
+    def _is_retryable(code: int) -> bool:
+        """Check if a Feishu error code is worth retrying (server/rate-limit errors)."""
+        return code >= 500_000 or code in (99991663, 99991400)  # server error, rate limit
+
+    def _send(self, receive_id: str, msg_type: str, content: str,
+              _max_retries: int = 2):
+        """Send a message via Feishu IM API with retry.
 
         Args:
             receive_id: open_id (user) or chat_id (group, starts with "oc_")
             msg_type: message type (text, interactive, image)
             content: JSON content string
+            _max_retries: max retry attempts on transient failure
         """
         # Auto-detect receive_id type: chat_id starts with "oc_"
         id_type = "chat_id" if receive_id.startswith("oc_") else "open_id"
 
-        body = CreateMessageRequestBody.builder() \
-            .receive_id(receive_id) \
-            .msg_type(msg_type) \
-            .content(content) \
-            .build()
+        for attempt in range(_max_retries + 1):
+            try:
+                body = CreateMessageRequestBody.builder() \
+                    .receive_id(receive_id) \
+                    .msg_type(msg_type) \
+                    .content(content) \
+                    .build()
 
-        request = CreateMessageRequest.builder() \
-            .receive_id_type(id_type) \
-            .request_body(body) \
-            .build()
+                request = CreateMessageRequest.builder() \
+                    .receive_id_type(id_type) \
+                    .request_body(body) \
+                    .build()
 
-        try:
-            response = self.client.im.v1.message.create(request)
-            if not response.success():
-                logger.error(f"Failed to send message: code={response.code}, msg={response.msg}")
-            else:
-                logger.info(f"Message sent to {receive_id} ({id_type}): {msg_type}")
-        except Exception as e:
-            logger.error(f"Error sending message: {e}", exc_info=True)
+                response = self.client.im.v1.message.create(request)
+                if response.success():
+                    logger.info(f"Message sent to {receive_id} ({id_type}): {msg_type}")
+                    return
+                if not self._is_retryable(response.code) or attempt >= _max_retries:
+                    logger.error(f"Failed to send message: code={response.code}, msg={response.msg}")
+                    return
+                logger.warning(f"Retryable send error (attempt {attempt + 1}): code={response.code}")
+            except Exception as e:
+                if attempt >= _max_retries:
+                    logger.error(f"Error sending message: {e}", exc_info=True)
+                    return
+                logger.warning(f"Send exception (attempt {attempt + 1}): {e}")
+            time.sleep(1 << attempt)  # 1s, 2s
