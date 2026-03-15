@@ -331,6 +331,7 @@ class ContextMixin:
         "decisions.md": 1200,
         "learnings.md": 1500,
         "patterns.md": 800,
+        "pending-actions.md": 800,
     }
 
     # Files larger than this threshold get index-only loading by default
@@ -357,6 +358,10 @@ class ContextMixin:
         "patterns": (
             re.compile(r"偏好|习惯|风格|模式|pattern|决策", re.I),
             ["patterns.md", "decisions.md"],
+        ),
+        "actions": (
+            re.compile(r"待办|todo|行动|pending|action|任务|要做|计划|安装|迁移", re.I),
+            ["pending-actions.md", "tools.md"],
         ),
     }
     _TRIVIAL_RE = re.compile(
