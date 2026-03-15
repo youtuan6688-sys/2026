@@ -304,6 +304,12 @@ class ClaudeMixin:
             system_prompt=system_prompt,
         )
 
+        # Track quota usage (R10)
+        try:
+            self.quota.record_call("sonnet", success, output or "")
+        except Exception:
+            pass
+
         if not output:
             output = "(no output)"
         self._send_long_text(sender_id, output)
@@ -456,6 +462,12 @@ class ClaudeMixin:
                     system_prompt=system_prompt,
                 )
 
+                # Track quota usage (R10)
+                try:
+                    self.quota.record_call("sonnet", success, output or "")
+                except Exception:
+                    pass
+
                 if not output:
                     output = "(no output)"
                 self._send_long_text(sender_id, output)
@@ -502,6 +514,12 @@ class ClaudeMixin:
                 user_message=prompt,
                 system_prompt=system_prompt,
             )
+
+            # Track quota usage (R10)
+            try:
+                self.quota.record_call("sonnet", success, output or "")
+            except Exception:
+                pass
 
             if not output:
                 output = "(no output)"

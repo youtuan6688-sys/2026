@@ -68,6 +68,8 @@ class IntentMixin:
                         context_parts.append(f"- {title}: {summary}")
             if not context_parts:
                 return ""
+            # Track which knowledge was used (E1: feedback loop)
+            self._track_kb_usage(results)
             return "相关知识库内容：\n" + "\n".join(context_parts)
         except Exception as e:
             logger.warning(f"Knowledge base query failed, falling back to keyword search: {e}")
@@ -114,3 +116,38 @@ class IntentMixin:
         except Exception as e:
             logger.warning(f"Keyword fallback also failed: {e}")
             return ""
+
+    @staticmethod
+    def _track_kb_usage(results: list[dict]):
+        """Track which knowledge base articles are actually used in responses.
+
+        Writes usage counts to data/kb_usage.json for evolution feedback loop.
+        """
+        import json
+        from pathlib import Path
+        from datetime import date
+
+        usage_file = Path("/Users/tuanyou/Happycode2026/data/kb_usage.json")
+        try:
+            usage = json.loads(usage_file.read_text(encoding="utf-8")) if usage_file.exists() else {}
+        except Exception:
+            usage = {}
+
+        today = date.today().isoformat()
+        for r in results:
+            if not r or r.get("distance", 1) >= 0.7:
+                continue
+            doc_id = r.get("id", "")
+            title = r.get("title", "unknown")
+            if doc_id not in usage:
+                usage[doc_id] = {"title": title, "count": 0, "last_used": ""}
+            usage[doc_id]["count"] = usage[doc_id].get("count", 0) + 1
+            usage[doc_id]["last_used"] = today
+
+        try:
+            usage_file.parent.mkdir(parents=True, exist_ok=True)
+            usage_file.write_text(
+                json.dumps(usage, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+        except Exception as e:
+            logger.debug(f"KB usage tracking write failed (non-fatal): {e}")
