@@ -70,8 +70,47 @@ class IntentMixin:
                 return ""
             return "相关知识库内容：\n" + "\n".join(context_parts)
         except Exception as e:
-            logger.warning(f"Knowledge base query failed: {e}")
+            logger.warning(f"Knowledge base query failed, falling back to keyword search: {e}")
             self.error_tracker.track(
                 "kb_query_error", str(e), "query_knowledge_base", "medium", text[:100],
             )
+            return self._keyword_fallback(text)
+
+    def _keyword_fallback(self, text: str, max_results: int = 3) -> str:
+        """Fallback keyword search when vector store is unavailable.
+
+        Scans vault article/social/docs titles and first 500 chars for keyword matches.
+        """
+        from pathlib import Path
+        try:
+            vault = Path(getattr(self, '_vault_path', '/Users/tuanyou/Happycode2026/vault'))
+            # Extract keywords (2+ char Chinese/English words)
+            keywords = [w for w in re.split(r'[\s,，。？！、/]+', text) if len(w) >= 2]
+            if not keywords:
+                return ""
+
+            hits = []
+            for subdir in ("articles", "social", "docs"):
+                d = vault / subdir
+                if not d.exists():
+                    continue
+                for md in d.glob("*.md"):
+                    try:
+                        content = md.read_text(encoding="utf-8")[:500]
+                        title = md.stem.replace("-", " ").replace("_", " ")
+                        searchable = f"{title} {content}".lower()
+                        score = sum(1 for kw in keywords if kw.lower() in searchable)
+                        if score > 0:
+                            hits.append((score, title, content[:150]))
+                    except Exception:
+                        continue
+
+            if not hits:
+                return ""
+            hits.sort(key=lambda x: x[0], reverse=True)
+            parts = [f"- {title}: {snippet}..." for _, title, snippet in hits[:max_results]]
+            logger.info(f"Keyword fallback found {len(hits)} results for: {text[:50]}")
+            return "相关知识库内容（关键词匹配）：\n" + "\n".join(parts)
+        except Exception as e:
+            logger.warning(f"Keyword fallback also failed: {e}")
             return ""

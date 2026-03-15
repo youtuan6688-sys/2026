@@ -192,12 +192,15 @@ def run_synthesis():
             f.write(f"\n\n{header}\n{evolution_section}\n")
         logger.info("Evolution suggestions saved to knowledge-synthesis.md")
 
-    # Compress old daily synthesis entries (keep last 7 days + this weekly)
-    _compress_daily_synthesis()
+    # Compress old entries (daily <7d, weekly <28d, rest archived)
+    compress_synthesis()
 
 
-def _compress_daily_synthesis():
-    """Remove daily synthesis entries older than 7 days (weekly replaces them)."""
+def compress_synthesis():
+    """Compress knowledge-synthesis.md: keep daily <7d, weekly <28d, archive the rest.
+
+    Can be called from weekly_synthesis or daily_evolution.
+    """
     synthesis_file = MEMORY_DIR / "knowledge-synthesis.md"
     if not synthesis_file.exists():
         return
@@ -206,18 +209,43 @@ def _compress_daily_synthesis():
     if len(content) < 5000:
         return  # Not big enough to need compression
 
-    cutoff = (date.today() - timedelta(days=7)).isoformat()
+    daily_cutoff = (date.today() - timedelta(days=7)).isoformat()
+    weekly_cutoff = (date.today() - timedelta(days=28)).isoformat()
+
     sections = re.split(r'(?=## \d{4}-\d{2}-\d{2})', content)
     kept = []
+    archived = []
+
     for section in sections:
         date_match = re.match(r'## (\d{4}-\d{2}-\d{2})', section)
-        if not date_match or date_match.group(1) >= cutoff or "周度" in section:
-            kept.append(section)
+        if not date_match:
+            kept.append(section)  # header / preamble
+            continue
+        section_date = date_match.group(1)
+        is_weekly = "周度" in section
+
+        if is_weekly:
+            if section_date >= weekly_cutoff:
+                kept.append(section)
+            else:
+                archived.append(section)
+        else:
+            if section_date >= daily_cutoff:
+                kept.append(section)
+            # else: daily entries older than 7 days are dropped (weekly replaces them)
 
     new_content = "".join(kept)
     if len(new_content) < len(content):
         synthesis_file.write_text(new_content, encoding="utf-8")
         logger.info(f"Compressed knowledge-synthesis.md: {len(content)} → {len(new_content)} chars")
+
+    # Archive old weekly entries
+    if archived:
+        archive_file = MEMORY_DIR / "knowledge-synthesis-archive.md"
+        with open(archive_file, "a", encoding="utf-8") as f:
+            for section in archived:
+                f.write(f"\n{section}")
+        logger.info(f"Archived {len(archived)} old weekly entries")
 
 
 if __name__ == "__main__":

@@ -148,4 +148,12 @@ def compress_all() -> dict[str, bool]:
         except Exception as e:
             logger.error(f"Failed to compress {name}: {e}")
             results[name] = False
+
+    # Also compress knowledge-synthesis.md (date-section based, not line-based)
+    try:
+        from scripts.weekly_synthesis import compress_synthesis
+        compress_synthesis()
+    except Exception as e:
+        logger.warning(f"Knowledge-synthesis compression failed (non-fatal): {e}")
+
     return results

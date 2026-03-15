@@ -412,6 +412,11 @@ class MessageRouter(IntentMixin, ContextMixin, CommandsMixin, SessionsMixin,
             if active:
                 ltm.pause(reason="user_new_message")
                 logger.info(f"Long task {active.task_id} paused by new user message")
+                self.sender.send_text(
+                    sender_id,
+                    f"⏸ 长任务已暂停（已完成 {active.steps_completed} 步）\n"
+                    f"处理完当前消息后，发送「继续」可恢复",
+                )
 
         # Non-slash resume shortcuts
         if stripped in ("继续", "继续执行"):
