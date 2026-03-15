@@ -172,7 +172,8 @@ def test_capability(name: str, test_prompt: str) -> bool:
     try:
         env = safe_env()
         result = subprocess.run(
-            [CLAUDE_PATH, "-p", test_prompt, "--model", "haiku"],
+            [CLAUDE_PATH, "-p", test_prompt, "--model", "haiku",
+             "--output-format", "text"],
             capture_output=True, text=True, timeout=30, env=env,
         )
         passed = bool(result.stdout.strip())

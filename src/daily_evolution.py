@@ -48,7 +48,8 @@ def _call_opus(prompt: str, timeout: int = 120) -> str:
     """
     env = safe_env()
     result = subprocess.run(
-        [CLAUDE_PATH, "-p", prompt, "--model", "opus"],
+        [CLAUDE_PATH, "-p", prompt, "--model", "opus",
+         "--output-format", "text"],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
     output = result.stdout.strip()
@@ -147,7 +148,8 @@ def _call_sonnet(prompt: str, timeout: int = 60) -> str:
     """Call Claude sonnet for lighter tasks (compression, summarization)."""
     env = safe_env()
     result = subprocess.run(
-        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+         "--output-format", "text"],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
     return result.stdout.strip()

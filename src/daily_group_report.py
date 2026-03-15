@@ -224,7 +224,8 @@ def _extract_highlights(entries: list[dict]) -> dict:
     try:
         env = safe_env()
         result = subprocess.run(
-            [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+            [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+             "--output-format", "text"],
             capture_output=True, text=True, timeout=60, env=env,
         )
         output = result.stdout.strip()

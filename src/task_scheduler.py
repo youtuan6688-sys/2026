@@ -509,7 +509,8 @@ def _run_claude_prompt(prompt: str, timeout: int = 120) -> str:
         from src.utils.subprocess_env import CLAUDE_PATH
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         result = subprocess.run(
-            [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+            [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+             "--output-format", "text"],
             capture_output=True, text=True, timeout=timeout, env=env,
         )
         output = result.stdout.strip()

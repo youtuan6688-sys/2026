@@ -29,7 +29,8 @@ def _call_sonnet(prompt: str, timeout: int = 120) -> str:
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
     env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
     result = subprocess.run(
-        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+         "--output-format", "text"],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
     return result.stdout.strip()

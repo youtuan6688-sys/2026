@@ -32,7 +32,8 @@ def _call_haiku(prompt: str) -> str:
     env["PATH"] = f"/Users/tuanyou/.local/bin:{env.get('PATH', '')}"
     try:
         result = subprocess.run(
-            [CLAUDE_PATH, "-p", prompt, "--model", "haiku"],
+            [CLAUDE_PATH, "-p", prompt, "--model", "haiku",
+             "--output-format", "text"],
             capture_output=True, text=True, timeout=30, env=env,
         )
         return result.stdout.strip()

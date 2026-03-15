@@ -232,7 +232,8 @@ class QuotaTracker:
         """
         env = safe_env()
 
-        cmd = [CLAUDE_PATH, "-p", prompt, "--model", model]
+        cmd = [CLAUDE_PATH, "-p", prompt, "--model", model,
+               "--output-format", "text"]
         if extra_args:
             cmd.extend(extra_args)
 

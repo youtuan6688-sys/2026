@@ -36,7 +36,8 @@ def _call_sonnet(prompt: str, timeout: int = 60) -> str:
     import subprocess
     env = safe_env()
     result = subprocess.run(
-        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet"],
+        [CLAUDE_PATH, "-p", prompt, "--model", "sonnet",
+         "--output-format", "text"],
         capture_output=True, text=True, timeout=timeout, env=env,
     )
     return result.stdout.strip()
