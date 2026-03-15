@@ -321,7 +321,7 @@ class ClaudeMixin:
                 ltm, active_task, output, sender_id, system_prompt,
             )
         elif active_task and not success:
-            ltm.complete(reason="execution_failed")
+            ltm.fail(reason="execution_failed")
 
     # ── Real-time fact extraction ──
     _fact_counter = 0
@@ -464,9 +464,9 @@ class ClaudeMixin:
                 )
 
                 if not success:
-                    ltm.complete(reason="step_failed")
+                    ltm.fail(reason="step_failed")
                     ltm.release_step(sender_id)
-                    self.sender.send_text(sender_id, "执行出错，长任务暂停")
+                    self.sender.send_text(sender_id, "执行出错，长任务已停止")
                     return
 
                 # Schedule next step (recursive chain)
@@ -477,7 +477,7 @@ class ClaudeMixin:
 
             except Exception as e:
                 logger.error(f"Continuation step failed: {e}", exc_info=True)
-                ltm.complete(reason="error")
+                ltm.fail(reason="error")
                 ltm.release_step(sender_id)
                 self.sender.send_text(sender_id, f"续接执行失败: {e}")
 

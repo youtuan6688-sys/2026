@@ -257,7 +257,26 @@ class CommandsMixin:
         self.sender.send_text(sender_id, status)
 
     def _resume_from_checkpoint(self, sender_id: str):
-        """Resume execution from the last checkpoint."""
+        """Resume execution from interrupted long task or last checkpoint."""
+        # Priority: check for interrupted long task first
+        from src.long_task import LongTaskManager
+        from datetime import datetime
+        ltm = LongTaskManager()
+        lt = ltm._load()
+        if lt and lt.status == "interrupted" and lt.sender_id == sender_id:
+            lt.status = "active"
+            lt.updated_at = datetime.now().isoformat()
+            ltm._save(lt)
+            self.sender.send_text(
+                sender_id,
+                f"恢复中断任务（已完成 {lt.steps_completed} 步）...",
+            )
+            recovery_prompt = ltm.build_recovery_prompt(lt)
+            self._add_turn("user", "继续中断任务", chat_id=sender_id)
+            self._execute_claude(recovery_prompt, sender_id, is_long_task=True)
+            return
+
+        # Fallback: checkpoint-based resume
         checkpoint = self.checkpoint_manager.load()
         if not checkpoint:
             self.sender.send_text(sender_id, "没有可续接的任务检查点")

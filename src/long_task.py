@@ -58,10 +58,11 @@ class LongTask:
     original_prompt: str
     sender_id: str
     session_id: str = ""
-    status: str = "active"  # active, completed, paused, failed
+    status: str = "active"  # active, completed, paused, failed, interrupted
     steps_completed: int = 0
     max_steps: int = MAX_AUTO_STEPS
     last_output: str = ""
+    step_results: list[str] = field(default_factory=list)  # per-step summary (max 200 chars each)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -113,6 +114,7 @@ class LongTaskManager:
 
         task.steps_completed += 1
         task.last_output = output[-500:]
+        task.step_results.append(output[:200].strip())
         task.updated_at = datetime.now().isoformat()
 
         if task.steps_completed >= task.max_steps:
@@ -142,12 +144,56 @@ class LongTaskManager:
 
     def build_continue_prompt(self, task: LongTask) -> str:
         """Build the auto-continuation prompt for the next step."""
-        return (
-            f"继续执行任务。上一步已完成（第 {task.steps_completed} 步）。\n\n"
-            f"原始任务: {task.original_prompt[:500]}\n\n"
-            f"上一步输出摘要:\n{task.last_output[:300]}\n\n"
-            f"请继续下一步。如果全部完成，请明确说明「全部完成」。"
-        )
+        parts = [
+            f"继续执行任务。上一步已完成（第 {task.steps_completed} 步）。",
+            f"原始任务: {task.original_prompt[:500]}",
+        ]
+        if task.step_results:
+            steps_text = "\n".join(
+                f"  步骤{i+1}: {r}" for i, r in enumerate(task.step_results[-3:])
+            )
+            parts.append(f"已完成步骤:\n{steps_text}")
+        parts.append(f"上一步输出摘要:\n{task.last_output[:300]}")
+        parts.append("请继续下一步。如果全部完成，请明确说明「全部完成」。")
+        return "\n\n".join(parts)
+
+    def build_recovery_prompt(self, task: LongTask) -> str:
+        """Build prompt for resuming an interrupted task."""
+        parts = [
+            f"任务被中断，请从第 {task.steps_completed + 1} 步继续。",
+            f"原始任务: {task.original_prompt[:500]}",
+        ]
+        if task.step_results:
+            steps_text = "\n".join(
+                f"  步骤{i+1}: {r}" for i, r in enumerate(task.step_results)
+            )
+            parts.append(f"已完成步骤:\n{steps_text}")
+        parts.append("请继续下一步。如果全部完成，请明确说明「全部完成」。")
+        return "\n\n".join(parts)
+
+    def fail(self, reason: str = "failed") -> None:
+        """Mark active task as failed (not completed)."""
+        task = self._load()
+        if task and task.status == "active":
+            task.status = "failed"
+            task.updated_at = datetime.now().isoformat()
+            self._save(task)
+            logger.info(f"Long task {task.task_id} failed: {reason}")
+
+    def recover_orphaned(self) -> LongTask | None:
+        """Detect orphaned active task after bot restart.
+
+        Changes status to 'interrupted' and returns the task for user notification.
+        Returns None if no orphaned task found.
+        """
+        task = self._load()
+        if task and task.status == "active":
+            task.status = "interrupted"
+            task.updated_at = datetime.now().isoformat()
+            self._save(task)
+            logger.info(f"Recovered orphaned task: {task.task_id} ({task.steps_completed} steps done)")
+            return task
+        return None
 
     @staticmethod
     def claim_step(sender_id: str) -> bool:

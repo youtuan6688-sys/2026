@@ -72,6 +72,30 @@ def main():
     except Exception as e:
         logger.warning(f"Auto-reindex check failed: {e}")
 
+    # Recover orphaned long tasks from previous crash (delayed notification)
+    import threading
+
+    def _notify_recovered_task():
+        import time
+        time.sleep(5)  # Wait for listener to be ready
+        try:
+            from src.long_task import LongTaskManager
+            ltm = LongTaskManager()
+            orphan = ltm.recover_orphaned()
+            if orphan:
+                sender.send_text(
+                    orphan.sender_id,
+                    f"⚠️ 上次中断的任务已恢复\n"
+                    f"任务: {orphan.original_prompt[:100]}\n"
+                    f"已完成 {orphan.steps_completed} 步\n"
+                    f"发送「继续」恢复执行",
+                )
+                logger.info(f"Notified user of interrupted task: {orphan.task_id}")
+        except Exception as e:
+            logger.warning(f"Long task recovery notification failed: {e}")
+
+    threading.Thread(target=_notify_recovered_task, daemon=True).start()
+
     logger.info("All components initialized. Starting Feishu listener...")
 
     # Start Feishu WebSocket listener (blocking)
